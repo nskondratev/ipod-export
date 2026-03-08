@@ -11,6 +11,7 @@ Implemented today:
 - CLI entrypoint with `dry-run`, `verbose`, `overwrite`, duplicate handling, and fallback scanning
 - Flat export layout with filename sanitization and conflict resolution
 - Duplicate detection by source identity or SHA-256 hashing
+- Graceful shutdown on `Ctrl+C` / `SIGTERM` with context cancellation and partial-file cleanup
 - Initial binary `iTunesDB` parsing for:
   - `mhbd`
   - `mhsd` track datasets
@@ -127,6 +128,8 @@ go run ./cmd/ipod-export \
 ```
 
 3. If the planned output looks correct, run the same command without `--dry-run`.
+
+If you stop the tool with `Ctrl+C`, it will finish the current cancellation path cleanly, stop scheduling new work, and remove any partially copied temporary file before exiting.
 
 ## Development
 

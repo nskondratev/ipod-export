@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -98,7 +99,7 @@ func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, err
 			continue
 		}
 
-		if err := copyFile(track.FilePath, dst); err != nil {
+		if err := copyFile(ctx, track.FilePath, dst, e.Config.Overwrite); err != nil {
 			return report, fmt.Errorf("copy %q to %q: %w", track.FilePath, dst, err)
 		}
 		report.Exported++
@@ -114,23 +115,75 @@ func (e Exporter) logf(format string, args ...any) {
 	}
 }
 
-func copyFile(src, dst string) error {
+func copyFile(ctx context.Context, src, dst string, overwrite bool) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	dir := filepath.Dir(dst)
+	base := filepath.Base(dst)
+
+	out, err := os.CreateTemp(dir, "."+base+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmpPath := out.Name()
+	completed := false
 	defer func() {
 		_ = out.Close()
+		if !completed {
+			_ = os.Remove(tmpPath)
+		}
 	}()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if err := copyWithContext(ctx, out, in); err != nil {
 		return err
 	}
-	return out.Sync()
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+
+	if !overwrite {
+		if _, err := os.Stat(dst); err == nil {
+			return os.ErrExist
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return err
+	}
+
+	completed = true
+	return nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, err := dst.Write(buf[:n]); err != nil {
+				return err
+			}
+		}
+
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		return readErr
+	}
 }

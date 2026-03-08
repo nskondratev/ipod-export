@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/nskondratev/ipod-export/internal/dedupe"
 	"github.com/nskondratev/ipod-export/internal/exporter"
@@ -16,15 +18,22 @@ import (
 
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, errInterrupted) {
+			os.Exit(130)
+		}
 		log.Printf("error: %v", err)
 		os.Exit(1)
 	}
 }
 
+var errInterrupted = errors.New("interrupted by signal")
+
 func run() error {
 	cfg := parseFlags()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if cfg.IPodPath == "" {
 		return errors.New("missing required --ipod path")
@@ -47,15 +56,23 @@ func run() error {
 	}
 
 	reader := ipoddb.NewITunesDBReader(logger)
-	tracks, err := reader.ReadTracks(context.Background(), cfg.IPodPath)
+	tracks, err := reader.ReadTracks(ctx, cfg.IPodPath)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Printf("shutdown requested while reading iPod database")
+			return errInterrupted
+		}
 		if !cfg.FallbackTags {
 			return fmt.Errorf("read iPod database: %w", err)
 		}
 
 		logger.Printf("database parsing failed, using filesystem fallback: %v", err)
-		tracks, err = ipoddb.NewFilesystemFallbackReader(logger).ReadTracks(context.Background(), cfg.IPodPath)
+		tracks, err = ipoddb.NewFilesystemFallbackReader(logger).ReadTracks(ctx, cfg.IPodPath)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				logger.Printf("shutdown requested while scanning filesystem fallback")
+				return errInterrupted
+			}
 			return fmt.Errorf("filesystem fallback failed: %w", err)
 		}
 	}
@@ -73,8 +90,17 @@ func run() error {
 		},
 	}
 
-	report, err := exp.Export(context.Background(), tracks)
+	report, err := exp.Export(ctx, tracks)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Printf(
+				"shutdown requested: exported=%d skipped_duplicates=%d skipped_existing=%d",
+				report.Exported,
+				report.SkippedDuplicates,
+				report.SkippedExisting,
+			)
+			return errInterrupted
+		}
 		return err
 	}
 
