@@ -60,3 +60,27 @@ func TestResolverFallsBackToDetailedNameAndSuffix(t *testing.T) {
 		t.Fatalf("Resolve() = %q, want %q", got, want)
 	}
 }
+
+func TestBuildPrimarySanitizesWindowsUnsafeCharacters(t *testing.T) {
+	t.Parallel()
+
+	got := BuildPrimary(model.Track{
+		Artist: `A<rtist>|Name`,
+		Title:  `Ti:"tle?*`,
+	}, ".mp3")
+
+	want := "A-rtist--Name - Ti-'tle-.mp3"
+	if got != want {
+		t.Fatalf("BuildPrimary() = %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeFilenameAvoidsReservedWindowsNames(t *testing.T) {
+	t.Parallel()
+
+	got := sanitizeFilename("CON", ".mp3")
+	want := "CON_.mp3"
+	if got != want {
+		t.Fatalf("sanitizeFilename() = %q, want %q", got, want)
+	}
+}

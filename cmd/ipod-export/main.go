@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"syscall"
 
 	"github.com/nskondratev/ipod-export/internal/dedupe"
 	"github.com/nskondratev/ipod-export/internal/exporter"
@@ -122,7 +121,7 @@ func run() error {
 
 func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() {
 	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(signals, handledSignals()...)
 
 	done := make(chan struct{})
 	go func() {

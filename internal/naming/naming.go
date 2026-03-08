@@ -41,7 +41,10 @@ func (Resolver) Resolve(track model.Track, ext string, exists func(string) bool)
 }
 
 func BuildPrimary(track model.Track, ext string) string {
-	return fmt.Sprintf("%s - %s%s", sanitizePart(defaultArtist(track.Artist)), sanitizePart(defaultTitle(track.Title)), ext)
+	return sanitizeFilename(
+		fmt.Sprintf("%s - %s", sanitizePart(defaultArtist(track.Artist)), sanitizePart(defaultTitle(track.Title))),
+		ext,
+	)
 }
 
 func BuildSecondary(track model.Track, ext string) string {
@@ -50,13 +53,13 @@ func BuildSecondary(track model.Track, ext string) string {
 		return BuildPrimary(track, ext)
 	}
 
-	return fmt.Sprintf(
+	return sanitizeFilename(fmt.Sprintf(
 		"%s - %s (%s)%s",
 		sanitizePart(defaultArtist(track.Artist)),
 		sanitizePart(defaultTitle(track.Title)),
 		sanitizePart(detail),
 		ext,
-	)
+	), "")
 }
 
 func detailSuffix(track model.Track) string {
@@ -72,9 +75,15 @@ func detailSuffix(track model.Track) string {
 
 func sanitizePart(value string) string {
 	replacer := strings.NewReplacer(
+		"<", "-",
+		">", "-",
 		"/", "-",
 		":", "-",
+		"\"", "'",
 		"\\", "-",
+		"|", "-",
+		"?", "",
+		"*", "-",
 		"\x00", "",
 	)
 	value = replacer.Replace(strings.TrimSpace(value))
@@ -90,6 +99,42 @@ func sanitizePart(value string) string {
 		return "Unknown"
 	}
 	return value
+}
+
+func sanitizeFilename(base, ext string) string {
+	base = strings.TrimSpace(base)
+	if ext != "" {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	base = strings.TrimRight(base, ". ")
+	if base == "" {
+		base = "Unknown"
+	}
+	if isWindowsReservedName(base) {
+		base += "_"
+	}
+	return base + ext
+}
+
+func isWindowsReservedName(value string) bool {
+	normalized := strings.TrimSpace(value)
+	normalized = strings.TrimRight(normalized, ". ")
+	normalized = strings.ToUpper(normalized)
+
+	switch normalized {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+
+	if len(normalized) == 4 {
+		prefix := normalized[:3]
+		suffix := normalized[3]
+		if (prefix == "COM" || prefix == "LPT") && suffix >= '1' && suffix <= '9' {
+			return true
+		}
+	}
+
+	return false
 }
 
 func defaultArtist(value string) string {

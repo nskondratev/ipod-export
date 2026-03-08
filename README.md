@@ -1,6 +1,6 @@
 # ipod-export
 
-`ipod-export` is a Go CLI for exporting music from a mounted Apple iPod Shuffle or iPod Nano on macOS.
+`ipod-export` is a Go CLI for exporting music from a mounted Apple iPod Shuffle or iPod Nano.
 
 The tool reads the iPod music database from `iPod_Control/iTunes/iTunesDB`, resolves randomized on-device file paths, and copies tracks into a flat output directory with human-readable filenames.
 
@@ -28,7 +28,7 @@ Known limitations:
 
 ## Requirements
 
-- macOS
+- macOS, Linux, or Windows
 - Go 1.26+
 - A mounted iPod with an `iPod_Control` directory
 
@@ -44,6 +44,13 @@ Or run directly without building:
 go run ./cmd/ipod-export --help
 ```
 
+Cross-compile examples:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o bin/ipod-export-linux ./cmd/ipod-export
+GOOS=windows GOARCH=amd64 go build -o bin/ipod-export.exe ./cmd/ipod-export
+```
+
 ## Usage
 
 Basic export:
@@ -52,6 +59,12 @@ Basic export:
 go run ./cmd/ipod-export \
   --ipod /Volumes/IPOD \
   --out ~/Music/ipod-export
+```
+
+Windows example:
+
+```powershell
+ipod-export.exe --ipod "E:\\" --out "$HOME\\Music\\ipod-export"
 ```
 
 Safe first pass with verbose logging and no writes:
@@ -88,6 +101,7 @@ Using the compiled binary:
 ## Output naming
 
 The exporter keeps a flat output directory.
+Generated names are sanitized to be safe on macOS, Linux, and Windows.
 
 Filename generation order:
 
