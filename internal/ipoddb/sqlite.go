@@ -34,10 +34,28 @@ func (r *SQLiteLibraryReader) ReadTracks(ctx context.Context, mountPath string) 
 		return nil, err
 	}
 
-	libraryDB, err := sql.Open("sqlite", paths.library)
+	tracks, err := querySQLiteLibrary(ctx, paths.library, locations)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite library %q: %w", paths.library, err)
+		return nil, err
 	}
+
+	if r.logger != nil {
+		r.logger.Printf("parsed sqlite iTunes library %q tracks=%d", paths.library, len(tracks))
+	}
+
+	return tracks, nil
+}
+
+func querySQLiteLibrary(
+	ctx context.Context,
+	libraryPath string,
+	locations map[int64]string,
+) ([]model.Track, error) {
+	libraryDB, err := sql.Open("sqlite", libraryPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite library %q: %w", libraryPath, err)
+	}
+
 	defer func() {
 		_ = libraryDB.Close()
 	}()
@@ -51,46 +69,58 @@ func (r *SQLiteLibraryReader) ReadTracks(ctx context.Context, mountPath string) 
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite library tracks: %w", err)
 	}
+
 	defer func() {
 		_ = rows.Close()
 	}()
 
 	tracks := make([]model.Track, 0, len(locations))
 	for rows.Next() {
-		var (
-			pid    int64
-			artist string
-			title  string
-			album  string
-			year   int
-		)
-		if err := rows.Scan(&pid, &artist, &title, &album, &year); err != nil {
-			return nil, fmt.Errorf("scan sqlite library track: %w", err)
+		track, ok, err := scanSQLiteTrack(rows, locations)
+		if err != nil {
+			return nil, err
 		}
 
-		location, ok := locations[pid]
-		if !ok || location == "" {
+		if !ok {
 			continue
 		}
 
-		tracks = append(tracks, model.Track{
-			TrackID:  strconv.FormatInt(pid, 10),
-			Artist:   artist,
-			Title:    title,
-			Album:    album,
-			Year:     year,
-			FilePath: location,
-		})
+		tracks = append(tracks, track)
 	}
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite library tracks: %w", err)
 	}
 
-	if r.logger != nil {
-		r.logger.Printf("parsed sqlite iTunes library %q tracks=%d", paths.library, len(tracks))
+	return tracks, nil
+}
+
+func scanSQLiteTrack(rows *sql.Rows, locations map[int64]string) (model.Track, bool, error) {
+	var (
+		pid    int64
+		artist string
+		title  string
+		album  string
+		year   int
+	)
+
+	if err := rows.Scan(&pid, &artist, &title, &album, &year); err != nil {
+		return model.Track{}, false, fmt.Errorf("scan sqlite library track: %w", err)
 	}
 
-	return tracks, nil
+	location, ok := locations[pid]
+	if !ok || location == "" {
+		return model.Track{}, false, nil
+	}
+
+	return model.Track{
+		TrackID:  strconv.FormatInt(pid, 10),
+		Artist:   artist,
+		Title:    title,
+		Album:    album,
+		Year:     year,
+		FilePath: location,
+	}, true, nil
 }
 
 type sqliteLibraryPaths struct {
@@ -105,6 +135,7 @@ func locateSQLiteLibraries(mountPath string) (sqliteLibraryPaths, error) {
 	if _, err := os.Stat(library); err != nil {
 		return sqliteLibraryPaths{}, fmt.Errorf("could not find sqlite library database under %q", mountPath)
 	}
+
 	if _, err := os.Stat(locations); err != nil {
 		return sqliteLibraryPaths{}, fmt.Errorf("could not find sqlite locations database under %q", mountPath)
 	}
@@ -117,6 +148,7 @@ func loadSQLiteLocations(ctx context.Context, dbPath, mountPath string) (map[int
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite locations %q: %w", dbPath, err)
 	}
+
 	defer func() {
 		_ = db.Close()
 	}()
@@ -130,11 +162,13 @@ func loadSQLiteLocations(ctx context.Context, dbPath, mountPath string) (map[int
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite locations: %w", err)
 	}
+
 	defer func() {
 		_ = rows.Close()
 	}()
 
 	locations := make(map[int64]string)
+
 	for rows.Next() {
 		var (
 			pid      int64
@@ -148,6 +182,7 @@ func loadSQLiteLocations(ctx context.Context, dbPath, mountPath string) (map[int
 		fullPath := filepath.Join(mountPath, filepath.FromSlash(basePath), filepath.FromSlash(location))
 		locations[pid] = fullPath
 	}
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite locations: %w", err)
 	}

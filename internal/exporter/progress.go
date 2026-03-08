@@ -76,42 +76,37 @@ func (p *ProgressBar) Finish() {
 	defer p.mu.Unlock()
 
 	p.renderLocked(true)
+
 	if p.rendered {
 		_, _ = fmt.Fprintln(p.output)
 	}
 }
 
 func (p *ProgressBar) renderLocked(force bool) {
+	if !p.shouldRender(force) {
+		return
+	}
+
+	_, _ = fmt.Fprint(p.output, p.renderLine())
+	p.rendered = true
+	p.lastRenderedAt = time.Now()
+}
+
+func (p *ProgressBar) shouldRender(force bool) bool {
 	if p.output == nil {
-		return
-	}
-	if !force && p.rendered && time.Since(p.lastRenderedAt) < 100*time.Millisecond {
-		return
+		return false
 	}
 
+	return force || !p.rendered || time.Since(p.lastRenderedAt) >= 100*time.Millisecond
+}
+
+func (p *ProgressBar) renderLine() string {
 	elapsed := time.Since(p.startedAt)
-	speed := float64(0)
-	if elapsed > 0 {
-		speed = float64(p.copiedBytes) / elapsed.Seconds()
-	}
+	speed := p.copySpeed(elapsed)
+	percent := p.progressPercent()
+	eta := p.progressETA(speed)
 
-	percent := float64(0)
-	if p.totalBytes > 0 {
-		percent = float64(p.copiedBytes) / float64(p.totalBytes)
-	} else if p.totalFiles > 0 {
-		percent = float64(p.completedFiles) / float64(p.totalFiles)
-	}
-	if percent > 1 {
-		percent = 1
-	}
-
-	eta := "--"
-	if speed > 0 && p.totalBytes > p.copiedBytes {
-		remaining := time.Duration(float64(p.totalBytes-p.copiedBytes)/speed) * time.Second
-		eta = formatDuration(remaining)
-	}
-
-	line := fmt.Sprintf(
+	return fmt.Sprintf(
 		"\r%s %5.1f%% %d/%d files %s/%s %s/s elapsed %s ETA %s %s",
 		renderBar(percent, 24),
 		percent*100,
@@ -124,10 +119,39 @@ func (p *ProgressBar) renderLocked(force bool) {
 		eta,
 		fmt.Sprintf("active=%d %s", p.activeFiles, truncateCurrentFile(p.currentFile, 20)),
 	)
+}
 
-	_, _ = fmt.Fprint(p.output, line)
-	p.rendered = true
-	p.lastRenderedAt = time.Now()
+func (p *ProgressBar) copySpeed(elapsed time.Duration) float64 {
+	if elapsed <= 0 {
+		return 0
+	}
+
+	return float64(p.copiedBytes) / elapsed.Seconds()
+}
+
+func (p *ProgressBar) progressPercent() float64 {
+	percent := float64(0)
+	if p.totalBytes > 0 {
+		percent = float64(p.copiedBytes) / float64(p.totalBytes)
+	} else if p.totalFiles > 0 {
+		percent = float64(p.completedFiles) / float64(p.totalFiles)
+	}
+
+	if percent > 1 {
+		return 1
+	}
+
+	return percent
+}
+
+func (p *ProgressBar) progressETA(speed float64) string {
+	if speed <= 0 || p.totalBytes <= p.copiedBytes {
+		return "--"
+	}
+
+	remaining := time.Duration(float64(p.totalBytes-p.copiedBytes)/speed) * time.Second
+
+	return formatDuration(remaining)
 }
 
 func renderBar(percent float64, width int) string {
@@ -135,6 +159,7 @@ func renderBar(percent float64, width int) string {
 	if filled > width {
 		filled = width
 	}
+
 	return "[" + strings.Repeat("=", filled) + strings.Repeat(" ", width-filled) + "]"
 }
 
@@ -168,6 +193,7 @@ func formatDuration(value time.Duration) string {
 	if hours > 0 {
 		return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 	}
+
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
@@ -175,8 +201,10 @@ func truncateCurrentFile(name string, limit int) string {
 	if limit <= 0 || len(name) <= limit {
 		return name
 	}
+
 	if limit <= 3 {
 		return name[:limit]
 	}
+
 	return name[:limit-3] + "..."
 }

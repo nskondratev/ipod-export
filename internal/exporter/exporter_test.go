@@ -19,7 +19,7 @@ func TestExportStopsWhenContextAlreadyCanceled(t *testing.T) {
 
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.mp3")
-	if err := os.WriteFile(src, []byte("audio"), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte("audio"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestCopyFileRemovesPartialTempFileOnCancel(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.mp3")
 	dst := filepath.Join(dir, "dest.mp3")
-	if err := os.WriteFile(src, []byte("audio"), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte("audio"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestPlanCopyJobsCollectsTotalSizes(t *testing.T) {
 
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.mp3")
-	if err := os.WriteFile(src, []byte("audio-bytes"), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte("audio-bytes"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -129,10 +129,10 @@ func TestExportCopiesFilesInParallel(t *testing.T) {
 	dir := t.TempDir()
 	src1 := filepath.Join(dir, "source1.mp3")
 	src2 := filepath.Join(dir, "source2.mp3")
-	if err := os.WriteFile(src1, []byte("audio-one"), 0o644); err != nil {
+	if err := os.WriteFile(src1, []byte("audio-one"), 0o600); err != nil {
 		t.Fatalf("WriteFile(src1) error = %v", err)
 	}
-	if err := os.WriteFile(src2, []byte("audio-two"), 0o644); err != nil {
+	if err := os.WriteFile(src2, []byte("audio-two"), 0o600); err != nil {
 		t.Fatalf("WriteFile(src2) error = %v", err)
 	}
 
@@ -164,6 +164,7 @@ func TestExportCopiesFilesInParallel(t *testing.T) {
 		filepath.Join(dir, "Artist One - Track One.mp3"),
 		filepath.Join(dir, "Artist Two - Track Two.mp3"),
 	} {
+		// #nosec G304 -- test reads files it just created inside t.TempDir().
 		data, err := os.ReadFile(want)
 		if err != nil {
 			t.Fatalf("ReadFile(%q) error = %v", want, err)

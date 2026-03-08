@@ -50,10 +50,13 @@ func (d *sourceDetector) Seen(track model.Track) (bool, error) {
 	if key == "" {
 		key = filepath.Clean(track.FilePath)
 	}
+
 	if _, ok := d.seen[key]; ok {
 		return true, nil
 	}
+
 	d.seen[key] = struct{}{}
+
 	return false, nil
 }
 
@@ -66,6 +69,7 @@ func (d *hashDetector) Seen(track model.Track) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("open source file: %w", err)
 	}
+
 	defer func() {
 		_ = file.Close()
 	}()
@@ -79,6 +83,8 @@ func (d *hashDetector) Seen(track model.Track) (bool, error) {
 	if _, ok := d.seen[key]; ok {
 		return true, nil
 	}
+
 	d.seen[key] = struct{}{}
+
 	return false, nil
 }

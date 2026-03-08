@@ -3,6 +3,7 @@ package ipoddb
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -55,31 +56,8 @@ func (r *FilesystemFallbackReader) ReadTracks(ctx context.Context, mountPath str
 	}
 
 	var tracks []model.Track
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
 
-		ext := strings.ToLower(filepath.Ext(path))
-		if _, ok := supportedAudioExtensions[ext]; !ok {
-			return nil
-		}
-
-		base := strings.TrimSuffix(filepath.Base(path), ext)
-		tracks = append(tracks, model.Track{
-			TrackID:  path,
-			Artist:   "",
-			Title:    base,
-			FilePath: path,
-		})
-		return nil
-	})
+	err := filepath.WalkDir(root, r.walkFallbackTrack(ctx, &tracks))
 	if err != nil {
 		return nil, err
 	}
@@ -89,4 +67,46 @@ func (r *FilesystemFallbackReader) ReadTracks(ctx context.Context, mountPath str
 	}
 
 	return tracks, nil
+}
+
+func (r *FilesystemFallbackReader) walkFallbackTrack(
+	ctx context.Context,
+	tracks *[]model.Track,
+) fs.WalkDirFunc {
+	return func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if d.IsDir() || !isSupportedAudioFile(path) {
+			return nil
+		}
+
+		*tracks = append(*tracks, buildFallbackTrack(path))
+
+		return nil
+	}
+}
+
+func isSupportedAudioFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	_, ok := supportedAudioExtensions[ext]
+
+	return ok
+}
+
+func buildFallbackTrack(path string) model.Track {
+	ext := strings.ToLower(filepath.Ext(path))
+	base := strings.TrimSuffix(filepath.Base(path), ext)
+
+	return model.Track{
+		TrackID:  path,
+		Artist:   "",
+		Title:    base,
+		FilePath: path,
+	}
 }

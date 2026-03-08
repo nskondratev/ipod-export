@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,18 +17,18 @@ func TestITunesDBReaderReadTracksParsesTrackMetadata(t *testing.T) {
 
 	mountPath := t.TempDir()
 	audioPath := filepath.Join(mountPath, "iPod_Control", "Music", "F00", "ABCD.mp3")
-	if err := os.MkdirAll(filepath.Dir(audioPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(audioPath), 0o750); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(audioPath, []byte("audio"), 0o644); err != nil {
+	if err := os.WriteFile(audioPath, []byte("audio"), 0o600); err != nil {
 		t.Fatalf("WriteFile(audio) error = %v", err)
 	}
 
 	dbPath := filepath.Join(mountPath, "iPod_Control", "iTunes", "iTunesDB")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
 		t.Fatalf("MkdirAll(db) error = %v", err)
 	}
-	if err := os.WriteFile(dbPath, buildTestDatabase(), 0o644); err != nil {
+	if err := os.WriteFile(dbPath, buildTestDatabase(), 0o600); err != nil {
 		t.Fatalf("WriteFile(iTunesDB) error = %v", err)
 	}
 
@@ -108,52 +109,57 @@ func buildDatabase(children ...[]byte) []byte {
 	payload := flatten(children...)
 	buf := make([]byte, 24)
 	copy(buf[0:4], []byte(chunkDatabase))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(buf)))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(buf)+len(payload)))
+	binary.LittleEndian.PutUint32(buf[4:8], safeUint32(len(buf)))
+	binary.LittleEndian.PutUint32(buf[8:12], safeUint32(len(buf)+len(payload)))
 	binary.LittleEndian.PutUint32(buf[16:20], 0x19)
-	binary.LittleEndian.PutUint32(buf[20:24], uint32(len(children)))
-	return append(buf, payload...)
+	binary.LittleEndian.PutUint32(buf[20:24], safeUint32(len(children)))
+
+	return append(buf[:len(buf):len(buf)], payload...)
 }
 
 func buildDataSet(kind uint32, child []byte) []byte {
 	buf := make([]byte, 16)
 	copy(buf[0:4], []byte(chunkDataSet))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(buf)))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(buf)+len(child)))
+	binary.LittleEndian.PutUint32(buf[4:8], safeUint32(len(buf)))
+	binary.LittleEndian.PutUint32(buf[8:12], safeUint32(len(buf)+len(child)))
 	binary.LittleEndian.PutUint32(buf[12:16], kind)
-	return append(buf, child...)
+
+	return append(buf[:len(buf):len(buf)], child...)
 }
 
 func buildTrackList(tracks ...[]byte) []byte {
 	payload := flatten(tracks...)
 	buf := make([]byte, 12)
 	copy(buf[0:4], []byte(chunkTrackSet))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(buf)))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(tracks)))
-	return append(buf, payload...)
+	binary.LittleEndian.PutUint32(buf[4:8], safeUint32(len(buf)))
+	binary.LittleEndian.PutUint32(buf[8:12], safeUint32(len(tracks)))
+
+	return append(buf[:len(buf):len(buf)], payload...)
 }
 
 func buildTrack(trackID uint32, strings ...[]byte) []byte {
 	payload := flatten(strings...)
 	buf := make([]byte, 160)
 	copy(buf[0:4], []byte(chunkTrack))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(buf)))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(buf)+len(payload)))
-	binary.LittleEndian.PutUint32(buf[12:16], uint32(len(strings)))
+	binary.LittleEndian.PutUint32(buf[4:8], safeUint32(len(buf)))
+	binary.LittleEndian.PutUint32(buf[8:12], safeUint32(len(buf)+len(payload)))
+	binary.LittleEndian.PutUint32(buf[12:16], safeUint32(len(strings)))
 	binary.LittleEndian.PutUint32(buf[16:20], trackID)
 	binary.LittleEndian.PutUint32(buf[148:152], 1997)
-	return append(buf, payload...)
+
+	return append(buf[:len(buf):len(buf)], payload...)
 }
 
 func buildStringObject(kind uint32, value string) []byte {
 	payload := encodeUTF16LE(value)
 	buf := make([]byte, 40)
 	copy(buf[0:4], []byte(chunkString))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(buf)))
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(buf)+len(payload)))
+	binary.LittleEndian.PutUint32(buf[4:8], safeUint32(len(buf)))
+	binary.LittleEndian.PutUint32(buf[8:12], safeUint32(len(buf)+len(payload)))
 	binary.LittleEndian.PutUint32(buf[12:16], kind)
-	binary.LittleEndian.PutUint32(buf[28:32], uint32(len(payload)))
-	return append(buf, payload...)
+	binary.LittleEndian.PutUint32(buf[28:32], safeUint32(len(payload)))
+
+	return append(buf[:len(buf):len(buf)], payload...)
 }
 
 func encodeUTF16LE(value string) []byte {
@@ -176,4 +182,13 @@ func flatten(chunks ...[]byte) []byte {
 		out = append(out, chunk...)
 	}
 	return out
+}
+
+func safeUint32(value int) uint32 {
+	if value < 0 || uint64(value) > math.MaxUint32 {
+		panic("value does not fit into uint32")
+	}
+
+	// #nosec G115 -- bounds are checked above before narrowing to uint32.
+	return uint32(value)
 }

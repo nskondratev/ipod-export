@@ -2,22 +2,102 @@ version: "2"
 
 run:
   timeout: 5m
-  relative-path-mode: gomod
-  tests: true
 
 linters:
-  default: standard
+  default: none
   enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - cyclop
+    - decorder
+    - dogsled
+    - dupl
     - errcheck
-    - revive
+    - errname
+    - errorlint
+    - exhaustive
+    - copyloopvar
+    - forbidigo
+    - funlen
+    - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - gosec
+    - govet
+    - importas
+    - ineffassign
     - staticcheck
+    - unused
+    - lll
+    - makezero
+    - misspell
+    - nakedret
+    - nestif
+    - nilnil
+    - nlreturn
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - rowserrcheck
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - wsl_v5
   settings:
-    revive:
-      rules:
-        - name: blank-imports
-        - name: increment-decrement
-        - name: redefines-builtin-id
+    funlen:
+      lines: 120
+      statements: 40
+    gocognit:
+      min-complexity: 10
+    nestif:
+      min-complexity: 4
+    gocyclo:
+      min-complexity: 10
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test.go
+        linters:
+          - funlen
+          - dupl
+          - copyloopvar
+          - cyclop
+          - gocognit
+          - goconst
+          - gocyclo
+          - nlreturn
+          - wsl_v5
+          - revive
+          - staticcheck
+      - path: scripts
+        linters:
+          - forbidigo
+          - gocritic
+          - revive
+          - wsl_v5
+      - path: cmd/loadtest
+        linters:
+          - errcheck
+          - gocognit
+          - gocyclo
+          - gosec
+          - lll
+          - noctx
+          - nlreturn
+          - prealloc
+          - wsl_v5
 
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports

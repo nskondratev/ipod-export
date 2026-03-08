@@ -14,6 +14,7 @@ import (
 	"github.com/nskondratev/ipod-export/internal/dedupe"
 	"github.com/nskondratev/ipod-export/internal/exporter"
 	"github.com/nskondratev/ipod-export/internal/ipoddb"
+	"github.com/nskondratev/ipod-export/internal/model"
 )
 
 func main() {
@@ -21,6 +22,7 @@ func main() {
 		if errors.Is(err, errInterrupted) {
 			os.Exit(130)
 		}
+
 		log.Printf("error: %v", err)
 		os.Exit(1)
 	}
@@ -30,56 +32,89 @@ var errInterrupted = errors.New("interrupted by signal")
 
 func run() error {
 	cfg := parseFlags()
-
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+
 	ctx, cancel := context.WithCancel(context.Background())
+
 	defer cancel()
+
 	stopSignals := installSignalHandler(logger, cancel)
+
 	defer stopSignals()
 
+	if err := validateConfig(cfg); err != nil {
+		return err
+	}
+
+	detector, err := dedupe.NewDetector(resolveDuplicateMode(cfg))
+	if err != nil {
+		return err
+	}
+
+	tracks, err := readTracks(ctx, logger, cfg)
+	if err != nil {
+		return err
+	}
+
+	exp := newExporter(logger, cfg, detector)
+
+	return exportTracks(ctx, logger, exp, tracks)
+}
+
+func validateConfig(cfg cliConfig) error {
 	if cfg.IPodPath == "" {
 		return errors.New("missing required --ipod path")
 	}
+
 	if cfg.OutputPath == "" {
 		return errors.New("missing required --out path")
 	}
-	if err := validateIPodPath(cfg.IPodPath); err != nil {
-		return err
-	}
 
-	dupMode := cfg.DuplicateMode
+	return validateIPodPath(cfg.IPodPath)
+}
+
+func resolveDuplicateMode(cfg cliConfig) string {
 	if cfg.HashDuplicates {
-		dupMode = dedupe.ModeHash
+		return dedupe.ModeHash
 	}
 
-	detector, err := dedupe.NewDetector(dupMode)
-	if err != nil {
-		return err
+	return cfg.DuplicateMode
+}
+
+func readTracks(ctx context.Context, logger *log.Logger, cfg cliConfig) ([]model.Track, error) {
+	tracks, err := ipoddb.NewITunesDBReader(logger).ReadTracks(ctx, cfg.IPodPath)
+	if err == nil {
+		return tracks, nil
 	}
 
-	reader := ipoddb.NewITunesDBReader(logger)
-	tracks, err := reader.ReadTracks(ctx, cfg.IPodPath)
+	if errors.Is(err, context.Canceled) {
+		logger.Printf("shutdown requested while reading iPod database")
+
+		return nil, errInterrupted
+	}
+
+	if !cfg.FallbackTags {
+		return nil, fmt.Errorf("read iPod database: %w", err)
+	}
+
+	logger.Printf("database parsing failed, using filesystem fallback: %v", err)
+
+	tracks, err = ipoddb.NewFilesystemFallbackReader(logger).ReadTracks(ctx, cfg.IPodPath)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			logger.Printf("shutdown requested while reading iPod database")
-			return errInterrupted
-		}
-		if !cfg.FallbackTags {
-			return fmt.Errorf("read iPod database: %w", err)
+			logger.Printf("shutdown requested while scanning filesystem fallback")
+
+			return nil, errInterrupted
 		}
 
-		logger.Printf("database parsing failed, using filesystem fallback: %v", err)
-		tracks, err = ipoddb.NewFilesystemFallbackReader(logger).ReadTracks(ctx, cfg.IPodPath)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				logger.Printf("shutdown requested while scanning filesystem fallback")
-				return errInterrupted
-			}
-			return fmt.Errorf("filesystem fallback failed: %w", err)
-		}
+		return nil, fmt.Errorf("filesystem fallback failed: %w", err)
 	}
 
-	exp := exporter.Exporter{
+	return tracks, nil
+}
+
+func newExporter(logger *log.Logger, cfg cliConfig, detector dedupe.Detector) exporter.Exporter {
+	return exporter.Exporter{
 		Logger: logger,
 		Config: exporter.Config{
 			OutputDir:      cfg.OutputPath,
@@ -94,29 +129,38 @@ func run() error {
 			AllowedExts:    ipoddb.SupportedAudioExtensions(),
 		},
 	}
+}
 
+func exportTracks(
+	ctx context.Context,
+	logger *log.Logger,
+	exp exporter.Exporter,
+	tracks []model.Track,
+) error {
 	report, err := exp.Export(ctx, tracks)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			logger.Printf(
-				"shutdown requested: exported=%d skipped_duplicates=%d skipped_existing=%d",
-				report.Exported,
-				report.SkippedDuplicates,
-				report.SkippedExisting,
-			)
+			logReport(logger, "shutdown requested", report)
+
 			return errInterrupted
 		}
+
 		return err
 	}
 
+	logReport(logger, "completed", report)
+
+	return nil
+}
+
+func logReport(logger *log.Logger, prefix string, report exporter.Report) {
 	logger.Printf(
-		"completed: exported=%d skipped_duplicates=%d skipped_existing=%d",
+		"%s: exported=%d skipped_duplicates=%d skipped_existing=%d",
+		prefix,
 		report.Exported,
 		report.SkippedDuplicates,
 		report.SkippedExisting,
 	)
-
-	return nil
 }
 
 func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() {
@@ -124,6 +168,7 @@ func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() 
 	signal.Notify(signals, handledSignals()...)
 
 	done := make(chan struct{})
+
 	go func() {
 		defer close(done)
 
@@ -132,7 +177,8 @@ func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() 
 			return
 		}
 
-		fmt.Fprintln(os.Stderr)
+		_, _ = fmt.Fprintln(os.Stderr)
+
 		logger.Printf("received %s, shutting down gracefully; press Ctrl+C again to force exit", sig)
 		cancel()
 
@@ -141,7 +187,8 @@ func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() 
 			return
 		}
 
-		fmt.Fprintln(os.Stderr)
+		_, _ = fmt.Fprintln(os.Stderr)
+
 		logger.Printf("received %s again, forcing exit", sig)
 		os.Exit(130)
 	}()
@@ -177,13 +224,20 @@ func parseFlags() cliConfig {
 	flag.IntVar(&cfg.Jobs, "jobs", 1, "number of files to copy in parallel")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", false, "overwrite destination files when names resolve to an existing file")
 	flag.BoolVar(&cfg.HashDuplicates, "hash-duplicates", false, "use content hashing to detect duplicate files")
-	flag.BoolVar(&cfg.FallbackTags, "fallback-tags", false, "fall back to scanning audio files when iTunesDB parsing fails (metadata fallback is scaffolded, not full tag parsing)")
+	flag.BoolVar(
+		&cfg.FallbackTags,
+		"fallback-tags",
+		false,
+		"fall back to scanning audio files when iTunesDB parsing fails "+
+			"(metadata fallback is scaffolded, not full tag parsing)",
+	)
 	flag.StringVar(&cfg.DuplicateMode, "duplicates", dedupe.ModeSource, "duplicate handling mode: none, source, hash")
 	flag.Parse()
 
 	if cfg.Jobs < 1 {
 		cfg.Jobs = 1
 	}
+
 	if cfg.Jobs > runtime.NumCPU()*4 {
 		cfg.Jobs = runtime.NumCPU() * 4
 	}
@@ -196,6 +250,7 @@ func validateIPodPath(path string) error {
 	if err != nil {
 		return fmt.Errorf("stat iPod path %q: %w", path, err)
 	}
+
 	if !info.IsDir() {
 		return fmt.Errorf("iPod path %q is not a directory", path)
 	}

@@ -48,7 +48,7 @@ func (DefaultConflictResolver) Resolve(track model.Track, ext string, exists fun
 }
 
 func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, error) {
-	if err := os.MkdirAll(e.Config.OutputDir, 0o755); err != nil {
+	if err := os.MkdirAll(e.Config.OutputDir, 0o750); err != nil {
 		return Report{}, fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -62,9 +62,12 @@ func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, err
 			if err := ctx.Err(); err != nil {
 				return report, err
 			}
+
 			e.Logger.Printf("[dry-run] copy %q -> %q", job.Track.FilePath, job.Destination)
+
 			report.Exported++
 		}
+
 		return report, nil
 	}
 
@@ -89,10 +92,18 @@ type copyJob struct {
 	Size        int64
 }
 
+type plannedTrack struct {
+	job              copyJob
+	skip             bool
+	skippedDuplicate bool
+	skippedExisting  bool
+}
+
 func (e Exporter) progressOutput() io.Writer {
 	if e.Config.ProgressOutput != nil {
 		return e.Config.ProgressOutput
 	}
+
 	return os.Stderr
 }
 
@@ -106,74 +117,135 @@ func (e Exporter) planCopyJobs(ctx context.Context, tracks []model.Track) ([]cop
 			return jobs, report, err
 		}
 
-		ext := strings.ToLower(filepath.Ext(track.FilePath))
-		if _, ok := e.Config.AllowedExts[ext]; !ok {
-			e.logf("skip unsupported file %q", track.FilePath)
-			continue
-		}
-
-		seen, err := e.Config.Detector.Seen(track)
+		planned, err := e.planTrack(track, reserved)
 		if err != nil {
 			return jobs, report, err
 		}
-		if seen {
-			report.SkippedDuplicates++
-			e.logf("skip duplicate %q", track.FilePath)
-			continue
-		}
 
-		name := e.Config.Resolver.Resolve(track, ext, func(candidate string) bool {
-			if _, ok := reserved[normalizeCandidateKey(candidate)]; ok {
-				return true
-			}
-			if e.Config.Overwrite {
-				return false
-			}
-			_, err := os.Stat(filepath.Join(e.Config.OutputDir, candidate))
-			return err == nil
-		})
-		reserved[normalizeCandidateKey(name)] = struct{}{}
-
-		dst := filepath.Join(e.Config.OutputDir, name)
-		if !e.Config.Overwrite {
-			if _, err := os.Stat(dst); err == nil {
-				report.SkippedExisting++
-				e.logf("skip existing %q", dst)
-				continue
-			}
-		}
-
-		info, err := os.Stat(track.FilePath)
-		if err != nil {
-			return jobs, report, fmt.Errorf("stat source file %q: %w", track.FilePath, err)
-		}
-
-		jobs = append(jobs, copyJob{
-			Track:       track,
-			Destination: dst,
-			Size:        info.Size(),
-		})
+		jobs, report = appendPlannedTrack(jobs, report, planned)
 	}
 
 	return jobs, report, nil
 }
 
+func (e Exporter) planTrack(track model.Track, reserved map[string]struct{}) (plannedTrack, error) {
+	ext, ok := e.supportedExtension(track.FilePath)
+	if !ok {
+		e.logf("skip unsupported file %q", track.FilePath)
+
+		return plannedTrack{skip: true}, nil
+	}
+
+	seen, err := e.Config.Detector.Seen(track)
+	if err != nil {
+		return plannedTrack{}, err
+	}
+
+	if seen {
+		e.logf("skip duplicate %q", track.FilePath)
+
+		return plannedTrack{
+			skip:             true,
+			skippedDuplicate: true,
+		}, nil
+	}
+
+	dst := e.planDestination(track, ext, reserved)
+	if dst == "" {
+		return plannedTrack{
+			skip:            true,
+			skippedExisting: true,
+		}, nil
+	}
+
+	size, err := fileSize(track.FilePath)
+	if err != nil {
+		return plannedTrack{}, fmt.Errorf("stat source file %q: %w", track.FilePath, err)
+	}
+
+	return plannedTrack{
+		job: copyJob{
+			Track:       track,
+			Destination: dst,
+			Size:        size,
+		},
+	}, nil
+}
+
+func (e Exporter) supportedExtension(path string) (string, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	_, ok := e.Config.AllowedExts[ext]
+
+	return ext, ok
+}
+
+func (e Exporter) planDestination(
+	track model.Track,
+	ext string,
+	reserved map[string]struct{},
+) string {
+	name := e.Config.Resolver.Resolve(track, ext, func(candidate string) bool {
+		return e.candidateExists(candidate, reserved)
+	})
+	reserved[normalizeCandidateKey(name)] = struct{}{}
+
+	dst := filepath.Join(e.Config.OutputDir, name)
+	if !e.Config.Overwrite && destinationExists(dst) {
+		e.logf("skip existing %q", dst)
+
+		return ""
+	}
+
+	return dst
+}
+
+func (e Exporter) candidateExists(candidate string, reserved map[string]struct{}) bool {
+	if _, ok := reserved[normalizeCandidateKey(candidate)]; ok {
+		return true
+	}
+
+	if e.Config.Overwrite {
+		return false
+	}
+
+	_, err := os.Stat(filepath.Join(e.Config.OutputDir, candidate))
+
+	return err == nil
+}
+
+func destinationExists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
+}
+
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+
+	return info.Size(), nil
+}
+
 func totalBytes(jobs []copyJob) int64 {
 	var total int64
+
 	for _, job := range jobs {
 		total += job.Size
 	}
+
 	return total
 }
 
-func (e Exporter) executeCopyJobs(ctx context.Context, jobs []copyJob, report Report, progress *ProgressBar) (Report, error) {
-	workerCount := e.Config.Jobs
-	if workerCount < 1 {
-		workerCount = 1
-	}
-	if workerCount > len(jobs) && len(jobs) > 0 {
-		workerCount = len(jobs)
-	}
+func (e Exporter) executeCopyJobs(
+	ctx context.Context,
+	jobs []copyJob,
+	report Report,
+	progress *ProgressBar,
+) (Report, error) {
+	workerCount := resolveWorkerCount(e.Config.Jobs, len(jobs))
+
 	if workerCount == 0 {
 		return report, nil
 	}
@@ -185,69 +257,135 @@ func (e Exporter) executeCopyJobs(ctx context.Context, jobs []copyJob, report Re
 	resultCh := make(chan copyResult, workerCount)
 
 	var wg sync.WaitGroup
-	for range workerCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobCh {
-				if err := ctx.Err(); err != nil {
-					resultCh <- copyResult{err: err}
-					return
-				}
+	e.startWorkers(ctx, &wg, workerCount, jobCh, resultCh, progress, cancel)
 
-				if progress != nil {
-					progress.StartFile(filepath.Base(job.Destination))
-				}
+	go enqueueCopyJobs(ctx, jobs, jobCh)
+	go closeResultsWhenDone(&wg, resultCh)
 
-				err := copyFile(ctx, job.Track.FilePath, job.Destination, e.Config.Overwrite, func(written int64) {
-					if progress != nil {
-						progress.AddBytes(written)
-					}
-				})
-				if err != nil {
-					if progress != nil {
-						progress.AbortFile()
-					}
-					resultCh <- copyResult{
-						job: job,
-						err: fmt.Errorf("copy %q to %q: %w", job.Track.FilePath, job.Destination, err),
-					}
-					cancel()
-					return
-				}
+	return collectCopyResults(ctx, resultCh, report)
+}
 
-				if progress != nil {
-					progress.FinishFile()
-				}
-				e.logf("copied %q -> %q", job.Track.FilePath, job.Destination)
-				resultCh <- copyResult{job: job}
-			}
-		}()
+type copyResult struct {
+	job copyJob
+	err error
+}
+
+func resolveWorkerCount(configured, jobCount int) int {
+	workerCount := configured
+	if workerCount < 1 {
+		workerCount = 1
 	}
 
-	go func() {
-		defer close(jobCh)
-		for _, job := range jobs {
-			select {
-			case <-ctx.Done():
-				return
-			case jobCh <- job:
-			}
+	if workerCount > jobCount && jobCount > 0 {
+		workerCount = jobCount
+	}
+
+	return workerCount
+}
+
+func (e Exporter) startWorkers(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	workerCount int,
+	jobCh <-chan copyJob,
+	resultCh chan<- copyResult,
+	progress *ProgressBar,
+	cancel context.CancelFunc,
+) {
+	for range workerCount {
+		wg.Add(1)
+
+		go e.copyWorker(ctx, wg, jobCh, resultCh, progress, cancel)
+	}
+}
+
+func (e Exporter) copyWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	jobCh <-chan copyJob,
+	resultCh chan<- copyResult,
+	progress *ProgressBar,
+	cancel context.CancelFunc,
+) {
+	defer wg.Done()
+
+	for job := range jobCh {
+		result := e.copyJob(ctx, job, progress)
+		if result.err == nil {
+			resultCh <- result
+
+			continue
 		}
-	}()
 
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
+		resultCh <- result
 
+		cancel()
+
+		return
+	}
+}
+
+func (e Exporter) copyJob(ctx context.Context, job copyJob, progress *ProgressBar) copyResult {
+	if err := ctx.Err(); err != nil {
+		return copyResult{err: err}
+	}
+
+	if progress != nil {
+		progress.StartFile(filepath.Base(job.Destination))
+	}
+
+	err := copyFile(ctx, job.Track.FilePath, job.Destination, e.Config.Overwrite, func(written int64) {
+		if progress != nil {
+			progress.AddBytes(written)
+		}
+	})
+	if err != nil {
+		if progress != nil {
+			progress.AbortFile()
+		}
+
+		return copyResult{
+			job: job,
+			err: fmt.Errorf("copy %q to %q: %w", job.Track.FilePath, job.Destination, err),
+		}
+	}
+
+	if progress != nil {
+		progress.FinishFile()
+	}
+
+	e.logf("copied %q -> %q", job.Track.FilePath, job.Destination)
+
+	return copyResult{job: job}
+}
+
+func enqueueCopyJobs(ctx context.Context, jobs []copyJob, jobCh chan<- copyJob) {
+	defer close(jobCh)
+
+	for _, job := range jobs {
+		select {
+		case <-ctx.Done():
+			return
+		case jobCh <- job:
+		}
+	}
+}
+
+func closeResultsWhenDone(wg *sync.WaitGroup, resultCh chan<- copyResult) {
+	wg.Wait()
+	close(resultCh)
+}
+
+func collectCopyResults(ctx context.Context, resultCh <-chan copyResult, report Report) (Report, error) {
 	for result := range resultCh {
 		if result.err != nil {
 			if errors.Is(result.err, context.Canceled) && ctx.Err() != nil {
 				return report, ctx.Err()
 			}
+
 			return report, result.err
 		}
+
 		report.Exported++
 	}
 
@@ -256,11 +394,6 @@ func (e Exporter) executeCopyJobs(ctx context.Context, jobs []copyJob, report Re
 	}
 
 	return report, nil
-}
-
-type copyResult struct {
-	job copyJob
-	err error
 }
 
 func normalizeCandidateKey(value string) string {
@@ -273,79 +406,165 @@ func normalizeCandidateKey(value string) string {
 }
 
 func copyFile(ctx context.Context, src, dst string, overwrite bool, onProgress func(int64)) (err error) {
+	// #nosec G304 -- source files come from the mounted iPod database and validated filesystem scan.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
+
 	defer func() {
 		_ = in.Close()
 	}()
 
-	dir := filepath.Dir(dst)
-	base := filepath.Base(dst)
-
-	out, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	tempFile, err := createTempCopy(dst)
 	if err != nil {
 		return err
 	}
-	tmpPath := out.Name()
-	completed := false
+
 	defer func() {
-		_ = out.Close()
-		if !completed {
-			_ = os.Remove(tmpPath)
-		}
+		tempFile.cleanup()
 	}()
 
-	if err := copyWithContext(ctx, out, in, onProgress); err != nil {
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		return err
-	}
-	if err := out.Close(); err != nil {
+	if err := copyWithContext(ctx, tempFile.file, in, onProgress); err != nil {
 		return err
 	}
 
-	if !overwrite {
-		if _, err := os.Stat(dst); err == nil {
-			return os.ErrExist
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := tempFile.finish(); err != nil {
 		return err
 	}
 
-	completed = true
+	if err := ensureDestinationWritable(dst, overwrite); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tempFile.path, dst); err != nil {
+		return err
+	}
+
+	tempFile.completed = true
+
 	return nil
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, onProgress func(int64)) error {
 	buf := make([]byte, 32*1024)
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			if _, err := dst.Write(buf[:n]); err != nil {
-				return err
-			}
-			if onProgress != nil {
-				onProgress(int64(n))
-			}
+		done, err := copyChunk(dst, src, buf, onProgress)
+		if err != nil {
+			return err
 		}
 
-		if readErr == nil {
-			continue
-		}
-		if errors.Is(readErr, io.EOF) {
+		if done {
 			return nil
 		}
-		return readErr
 	}
+}
+
+type tempCopyFile struct {
+	file      *os.File
+	path      string
+	completed bool
+}
+
+func createTempCopy(dst string) (*tempCopyFile, error) {
+	dir := filepath.Dir(dst)
+	base := filepath.Base(dst)
+
+	file, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return nil, err
+	}
+
+	return &tempCopyFile{
+		file: file,
+		path: file.Name(),
+	}, nil
+}
+
+func (t *tempCopyFile) cleanup() {
+	_ = t.file.Close()
+
+	if !t.completed {
+		_ = os.Remove(t.path)
+	}
+}
+
+func (t *tempCopyFile) finish() error {
+	if err := t.file.Sync(); err != nil {
+		return err
+	}
+
+	return t.file.Close()
+}
+
+func ensureDestinationWritable(dst string, overwrite bool) error {
+	if overwrite {
+		return nil
+	}
+
+	_, err := os.Stat(dst)
+	if err == nil {
+		return os.ErrExist
+	}
+
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return nil
+}
+
+func copyChunk(
+	dst io.Writer,
+	src io.Reader,
+	buf []byte,
+	onProgress func(int64),
+) (bool, error) {
+	n, readErr := src.Read(buf)
+	if n > 0 {
+		if _, err := dst.Write(buf[:n]); err != nil {
+			return false, err
+		}
+
+		if onProgress != nil {
+			onProgress(int64(n))
+		}
+	}
+
+	if readErr == nil {
+		return false, nil
+	}
+
+	if errors.Is(readErr, io.EOF) {
+		return true, nil
+	}
+
+	return false, readErr
+}
+
+func appendPlannedTrack(jobs []copyJob, report Report, planned plannedTrack) ([]copyJob, Report) {
+	if planned.skippedDuplicate {
+		report.SkippedDuplicates++
+
+		return jobs, report
+	}
+
+	if planned.skippedExisting {
+		report.SkippedExisting++
+
+		return jobs, report
+	}
+
+	if planned.skip {
+		return jobs, report
+	}
+
+	jobs = append(jobs, planned.job)
+
+	return jobs, report
 }

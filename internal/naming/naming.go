@@ -66,9 +66,11 @@ func detailSuffix(track model.Track) string {
 	if album := strings.TrimSpace(track.Album); album != "" {
 		parts = append(parts, album)
 	}
+
 	if track.Year > 0 {
 		parts = append(parts, fmt.Sprintf("%d", track.Year))
 	}
+
 	return strings.Join(parts, ", ")
 }
 
@@ -90,25 +92,31 @@ func sanitizePart(value string) string {
 		if unicode.IsControl(r) {
 			return -1
 		}
+
 		return r
 	}, value)
 	value = strings.Join(strings.Fields(value), " ")
 	value = strings.Trim(value, ". ")
+
 	if value == "" {
 		return "Unknown"
 	}
+
 	return value
 }
 
 func sanitizeFilename(base, ext string) string {
 	base = strings.TrimSpace(base)
 	base = strings.TrimRight(base, ". ")
+
 	if base == "" {
 		base = "Unknown"
 	}
+
 	if isWindowsReservedName(base) {
 		base += "_"
 	}
+
 	return base + ext
 }
 
@@ -125,6 +133,7 @@ func isWindowsReservedName(value string) bool {
 	if len(normalized) == 4 {
 		prefix := normalized[:3]
 		suffix := normalized[3]
+
 		if (prefix == "COM" || prefix == "LPT") && suffix >= '1' && suffix <= '9' {
 			return true
 		}
@@ -137,6 +146,7 @@ func defaultArtist(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return unknownArtist
 	}
+
 	return value
 }
 
@@ -144,5 +154,6 @@ func defaultTitle(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return unknownTitle
 	}
+
 	return value
 }

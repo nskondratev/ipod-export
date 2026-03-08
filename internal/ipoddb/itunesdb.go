@@ -3,6 +3,7 @@ package ipoddb
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,39 +31,61 @@ const (
 )
 
 func (r *ITunesDBReader) ReadTracks(ctx context.Context, mountPath string) ([]model.Track, error) {
-	var binaryErr error
-
-	dbPath, err := locateDatabase(mountPath)
-	if err == nil {
-		data, err := os.ReadFile(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("read database %q: %w", dbPath, err)
-		}
-
-		tracks, version, err := parseDatabase(ctx, data, mountPath)
-		if err == nil {
-			if r.logger != nil {
-				r.logger.Printf("parsed iTunesDB %q version=%d tracks=%d", dbPath, version, len(tracks))
-			}
-			return tracks, nil
-		}
-
-		if r.logger != nil {
-			r.logger.Printf("binary iPod database %q was found but could not be parsed, trying sqlite fallback: %v", dbPath, err)
-		}
-		binaryErr = err
+	tracks, binaryErr := r.readBinaryTracks(ctx, mountPath)
+	if binaryErr == nil {
+		return tracks, nil
 	}
 
 	sqliteReader := NewSQLiteLibraryReader(r.logger)
+
 	tracks, err := sqliteReader.ReadTracks(ctx, mountPath)
 	if err == nil {
 		return tracks, nil
 	}
 
 	if binaryErr != nil {
-		return nil, fmt.Errorf("read iPod database: binary reader failed: %v; sqlite reader failed: %w", binaryErr, err)
+		return nil, fmt.Errorf(
+			"read iPod database: %w",
+			errors.Join(
+				fmt.Errorf("binary reader failed: %w", binaryErr),
+				fmt.Errorf("sqlite reader failed: %w", err),
+			),
+		)
 	}
+
 	return nil, err
+}
+
+func (r *ITunesDBReader) readBinaryTracks(ctx context.Context, mountPath string) ([]model.Track, error) {
+	dbPath, err := locateDatabase(mountPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// #nosec G304 -- the database path is derived from the mounted iPod root selected by the user.
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("read database %q: %w", dbPath, err)
+	}
+
+	tracks, version, err := parseDatabase(ctx, data, mountPath)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Printf(
+				"binary iPod database %q was found but could not be parsed, trying sqlite fallback: %v",
+				dbPath,
+				err,
+			)
+		}
+
+		return nil, err
+	}
+
+	if r.logger != nil {
+		r.logger.Printf("parsed iTunesDB %q version=%d tracks=%d", dbPath, version, len(tracks))
+	}
+
+	return tracks, nil
 }
 
 type sizedChunk struct {
@@ -109,6 +132,7 @@ func parseDatabase(ctx context.Context, data []byte, mountPath string) ([]model.
 
 	end := minInt(len(data), root.Offset+root.TotalSize)
 	offset := root.Offset + root.HeaderSize
+
 	var tracks []model.Track
 
 	for offset < end {
@@ -121,12 +145,9 @@ func parseDatabase(ctx context.Context, data []byte, mountPath string) ([]model.
 			return nil, 0, err
 		}
 
-		if ds.Type == dataSetTracks {
-			parsed, err := parseTrackDataSet(ctx, data, ds, mountPath)
-			if err != nil {
-				return nil, 0, err
-			}
-			tracks = append(tracks, parsed...)
+		tracks, err = appendTracksFromDataSet(ctx, tracks, data, ds, mountPath)
+		if err != nil {
+			return nil, 0, err
 		}
 
 		offset += ds.TotalSize
@@ -139,9 +160,29 @@ func parseDatabase(ctx context.Context, data []byte, mountPath string) ([]model.
 	return tracks, root.Version, nil
 }
 
+func appendTracksFromDataSet(
+	ctx context.Context,
+	tracks []model.Track,
+	data []byte,
+	ds dataSetHeader,
+	mountPath string,
+) ([]model.Track, error) {
+	if ds.Type != dataSetTracks {
+		return tracks, nil
+	}
+
+	parsed, err := parseTrackDataSet(ctx, data, ds, mountPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(tracks, parsed...), nil
+}
+
 func parseTrackDataSet(ctx context.Context, data []byte, ds dataSetHeader, mountPath string) ([]model.Track, error) {
 	childOffset := ds.Offset + ds.HeaderSize
 	childEnd := minInt(len(data), ds.Offset+ds.TotalSize)
+
 	list, err := readTrackListHeader(data, childOffset, childEnd)
 	if err != nil {
 		return nil, err
@@ -149,6 +190,7 @@ func parseTrackDataSet(ctx context.Context, data []byte, ds dataSetHeader, mount
 
 	offset := childOffset + list.HeaderSize
 	tracks := make([]model.Track, 0, list.TrackCount)
+
 	for i := 0; i < list.TrackCount; i++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -158,9 +200,11 @@ func parseTrackDataSet(ctx context.Context, data []byte, ds dataSetHeader, mount
 		if err != nil {
 			return nil, err
 		}
+
 		if track.FilePath != "" {
 			tracks = append(tracks, track)
 		}
+
 		offset += size
 	}
 
@@ -184,6 +228,7 @@ func parseTrack(data []byte, offset, limit int, mountPath string) (model.Track, 
 		if header.StringCount > 0 && parsedStrings >= header.StringCount {
 			break
 		}
+
 		if !hasChunkSignature(data, cursor, chunkString) {
 			break
 		}
@@ -192,6 +237,7 @@ func parseTrack(data []byte, offset, limit int, mountPath string) (model.Track, 
 		if err != nil {
 			return model.Track{}, 0, err
 		}
+
 		applyStringObject(&track, obj, mountPath)
 		cursor += obj.TotalSize
 		parsedStrings++
@@ -218,6 +264,7 @@ func readDatabaseHeader(data []byte) (databaseHeader, error) {
 	if err != nil {
 		return databaseHeader{}, err
 	}
+
 	if chunk.HeaderSize < 24 {
 		return databaseHeader{}, fmt.Errorf("mhbd header too small: %d", chunk.HeaderSize)
 	}
@@ -234,6 +281,7 @@ func readDataSetHeader(data []byte, offset, limit int) (dataSetHeader, error) {
 	if err != nil {
 		return dataSetHeader{}, err
 	}
+
 	if chunk.HeaderSize < 16 {
 		return dataSetHeader{}, fmt.Errorf("mhsd header too small at %d: %d", offset, chunk.HeaderSize)
 	}
@@ -248,6 +296,7 @@ func readTrackListHeader(data []byte, offset, limit int) (trackListHeader, error
 	if offset+12 > limit || offset+12 > len(data) {
 		return trackListHeader{}, fmt.Errorf("truncated mhlt at %d", offset)
 	}
+
 	if got := string(data[offset : offset+4]); got != chunkTrackSet {
 		return trackListHeader{}, fmt.Errorf("expected %s at %d, got %q", chunkTrackSet, offset, got)
 	}
@@ -268,6 +317,7 @@ func readTrackHeader(data []byte, offset, limit int) (trackHeader, error) {
 	if err != nil {
 		return trackHeader{}, err
 	}
+
 	if chunk.HeaderSize < 24 {
 		return trackHeader{}, fmt.Errorf("mhit header too small at %d: %d", offset, chunk.HeaderSize)
 	}
@@ -292,6 +342,7 @@ func readStringObject(data []byte, offset, limit int) (stringObject, error) {
 	if err != nil {
 		return stringObject{}, err
 	}
+
 	if chunk.HeaderSize < 16 {
 		return stringObject{}, fmt.Errorf("mhod header too small at %d: %d", offset, chunk.HeaderSize)
 	}
@@ -318,12 +369,15 @@ func readSizedChunk(data []byte, offset, limit int, want string) (sizedChunk, er
 
 	headerSize := int(readUint32(data, offset+4))
 	totalSize := int(readUint32(data, offset+8))
+
 	if headerSize < 12 {
 		return sizedChunk{}, fmt.Errorf("invalid %s header size %d at %d", kind, headerSize, offset)
 	}
+
 	if totalSize < headerSize {
 		return sizedChunk{}, fmt.Errorf("invalid %s total size %d at %d", kind, totalSize, offset)
 	}
+
 	if offset+totalSize > limit || offset+totalSize > len(data) {
 		return sizedChunk{}, fmt.Errorf("%s at %d exceeds container bounds", kind, offset)
 	}
@@ -353,6 +407,7 @@ func extractStringPayload(chunk []byte, headerSize int) []byte {
 
 func decodeStringPayload(payload []byte) string {
 	rawDecoded := strings.TrimSpace(string(trimTrailingNUL(payload)))
+
 	utf16Decoded, ok := decodeUTF16LE(payload)
 	if !ok {
 		return rawDecoded
@@ -374,9 +429,11 @@ func decodeUTF16LE(payload []byte) (string, bool) {
 	if len(payload) < 2 {
 		return "", false
 	}
+
 	if len(payload)%2 != 0 {
 		payload = payload[:len(payload)-1]
 	}
+
 	if len(payload) == 0 {
 		return "", false
 	}
@@ -395,6 +452,7 @@ func looksLikeUTF16LE(payload []byte) bool {
 	}
 
 	lowHighBytes := 0
+
 	for i := 1; i < len(payload); i += 2 {
 		if payload[i] <= 0x04 {
 			lowHighBytes++
@@ -408,6 +466,7 @@ func trimTrailingNUL(payload []byte) []byte {
 	for len(payload) > 0 && payload[len(payload)-1] == 0 {
 		payload = payload[:len(payload)-1]
 	}
+
 	return payload
 }
 
@@ -415,11 +474,13 @@ func trimTrailingUTF16NUL(payload []byte) []byte {
 	for len(payload) >= 2 && payload[len(payload)-1] == 0 && payload[len(payload)-2] == 0 {
 		payload = payload[:len(payload)-2]
 	}
+
 	return payload
 }
 
 func scoreDecodedString(value string) int {
 	score := 0
+
 	for _, r := range value {
 		switch {
 		case r == unicode.ReplacementChar:
@@ -436,6 +497,7 @@ func scoreDecodedString(value string) int {
 			score--
 		}
 	}
+
 	return score
 }
 
@@ -468,17 +530,20 @@ func ResolveTrackPath(mountPath, raw string) string {
 	if cleaned == "" {
 		return ""
 	}
+
 	if filepath.IsAbs(cleaned) {
 		return cleaned
 	}
 
 	cleaned = strings.ReplaceAll(cleaned, ":", string(filepath.Separator))
 	cleaned = strings.TrimLeft(cleaned, string(filepath.Separator))
+
 	return filepath.Join(mountPath, cleaned)
 }
 
 func NewTrack(id, mountPath, rawPath string) model.Track {
 	resolved := ResolveTrackPath(mountPath, rawPath)
+
 	return model.Track{
 		TrackID:  id,
 		FilePath: resolved,
@@ -489,5 +554,6 @@ func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
+
 	return b
 }
