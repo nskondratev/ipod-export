@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/nskondratev/ipod-export/internal/model"
@@ -338,42 +339,56 @@ func extractStringPayload(chunk []byte, headerSize int) []byte {
 }
 
 func decodeStringPayload(payload []byte) string {
-	if looksUTF16LE(payload) {
-		payload = trimTrailingUTF16NUL(payload)
-		if len(payload) == 0 {
-			return ""
-		}
-		if len(payload)%2 != 0 {
-			payload = payload[:len(payload)-1]
-		}
-
-		words := make([]uint16, 0, len(payload)/2)
-		for i := 0; i+1 < len(payload); i += 2 {
-			words = append(words, binary.LittleEndian.Uint16(payload[i:i+2]))
-		}
-		return strings.TrimSpace(string(utf16.Decode(words)))
+	rawDecoded := strings.TrimSpace(string(trimTrailingNUL(payload)))
+	utf16Decoded, ok := decodeUTF16LE(payload)
+	if !ok {
+		return rawDecoded
 	}
 
-	payload = trimTrailingNUL(payload)
-	if len(payload) == 0 {
-		return ""
+	if looksLikeUTF16LE(payload) {
+		return utf16Decoded
 	}
-	return strings.TrimSpace(string(payload))
+
+	if scoreDecodedString(utf16Decoded) > scoreDecodedString(rawDecoded) {
+		return utf16Decoded
+	}
+
+	return rawDecoded
 }
 
-func looksUTF16LE(payload []byte) bool {
+func decodeUTF16LE(payload []byte) (string, bool) {
+	payload = trimTrailingUTF16NUL(payload)
 	if len(payload) < 2 {
+		return "", false
+	}
+	if len(payload)%2 != 0 {
+		payload = payload[:len(payload)-1]
+	}
+	if len(payload) == 0 {
+		return "", false
+	}
+
+	words := make([]uint16, 0, len(payload)/2)
+	for i := 0; i+1 < len(payload); i += 2 {
+		words = append(words, binary.LittleEndian.Uint16(payload[i:i+2]))
+	}
+
+	return strings.TrimSpace(string(utf16.Decode(words))), true
+}
+
+func looksLikeUTF16LE(payload []byte) bool {
+	if len(payload) < 2 || len(payload)%2 != 0 {
 		return false
 	}
 
-	zeroBytes := 0
+	lowHighBytes := 0
 	for i := 1; i < len(payload); i += 2 {
-		if payload[i] == 0 {
-			zeroBytes++
+		if payload[i] <= 0x04 {
+			lowHighBytes++
 		}
 	}
 
-	return zeroBytes > 0 && zeroBytes >= len(payload)/4
+	return lowHighBytes*2 >= len(payload)/2
 }
 
 func trimTrailingNUL(payload []byte) []byte {
@@ -388,6 +403,27 @@ func trimTrailingUTF16NUL(payload []byte) []byte {
 		payload = payload[:len(payload)-2]
 	}
 	return payload
+}
+
+func scoreDecodedString(value string) int {
+	score := 0
+	for _, r := range value {
+		switch {
+		case r == unicode.ReplacementChar:
+			score -= 4
+		case unicode.IsControl(r):
+			score -= 3
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			score += 3
+		case unicode.IsSpace(r):
+			score += 1
+		case unicode.IsPunct(r), unicode.IsSymbol(r):
+			score += 1
+		default:
+			score -= 1
+		}
+	}
+	return score
 }
 
 func hasChunkSignature(data []byte, offset int, want string) bool {

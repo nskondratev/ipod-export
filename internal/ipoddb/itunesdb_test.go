@@ -71,6 +71,28 @@ func TestResolveTrackPathConvertsColonSeparatedPaths(t *testing.T) {
 	}
 }
 
+func TestDecodeStringPayloadPrefersUTF16LEForCyrillic(t *testing.T) {
+	t.Parallel()
+
+	payload := encodeUTF16LE("легендарь огненных")
+	got := decodeStringPayload(payload)
+	want := "легендарь огненных"
+	if got != want {
+		t.Fatalf("decodeStringPayload() = %q, want %q", got, want)
+	}
+}
+
+func TestDecodeStringPayloadKeepsUTF8WhenItAlreadyLooksCorrect(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("Radiohead")
+	got := decodeStringPayload(payload)
+	want := "Radiohead"
+	if got != want {
+		t.Fatalf("decodeStringPayload() = %q, want %q", got, want)
+	}
+}
+
 func buildTestDatabase() []byte {
 	title := buildStringObject(stringTitle, "No Surprises")
 	location := buildStringObject(stringLocation, ":iPod_Control:Music:F00:ABCD.mp3")
