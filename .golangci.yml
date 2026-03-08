@@ -1,0 +1,23 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - revive
+    - staticcheck
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: increment-decrement
+        - name: redefines-builtin-id
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -77,7 +77,7 @@ func (p *ProgressBar) Finish() {
 
 	p.renderLocked(true)
 	if p.rendered {
-		fmt.Fprintln(p.output)
+		_, _ = fmt.Fprintln(p.output)
 	}
 }
 
@@ -125,7 +125,7 @@ func (p *ProgressBar) renderLocked(force bool) {
 		fmt.Sprintf("active=%d %s", p.activeFiles, truncateCurrentFile(p.currentFile, 20)),
 	)
 
-	fmt.Fprint(p.output, line)
+	_, _ = fmt.Fprint(p.output, line)
 	p.rendered = true
 	p.lastRenderedAt = time.Now()
 }

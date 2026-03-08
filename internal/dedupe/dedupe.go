@@ -66,7 +66,9 @@ func (d *hashDetector) Seen(track model.Track) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("open source file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	sum := sha256.New()
 	if _, err := io.Copy(sum, file); err != nil {

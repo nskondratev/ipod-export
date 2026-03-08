@@ -31,12 +31,12 @@ func TestSQLiteLibraryReaderReadTracks(t *testing.T) {
 	locationsPath := filepath.Join(base, "Locations.itdb")
 
 	libraryDB := openSQLiteDB(t, libraryPath)
-	defer libraryDB.Close()
+	defer closeSQLiteDB(t, libraryDB)
 	mustExecSQLite(t, libraryDB, `create table item (pid integer primary key, is_song integer, year integer, title text, artist text, album text)`)
 	mustExecSQLite(t, libraryDB, `insert into item(pid, is_song, year, title, artist, album) values (42, 1, 1997, 'No Surprises', 'Radiohead', 'OK Computer')`)
 
 	locationsDB := openSQLiteDB(t, locationsPath)
-	defer locationsDB.Close()
+	defer closeSQLiteDB(t, locationsDB)
 	mustExecSQLite(t, locationsDB, `create table base_location (id integer primary key, path text)`)
 	mustExecSQLite(t, locationsDB, `create table location (item_pid integer not null, sub_id integer not null default 0, base_location_id integer default 0, location_type integer, location text, extension integer, kind_id integer default 0, date_created integer default 0, file_size integer default 0, file_creator integer, file_type integer, num_dir_levels_file integer, num_dir_levels_lib integer, primary key (item_pid, sub_id))`)
 	mustExecSQLite(t, locationsDB, `insert into base_location(id, path) values (1, 'iPod_Control/Music')`)
@@ -66,6 +66,14 @@ func openSQLiteDB(t *testing.T, path string) *sql.DB {
 		t.Fatalf("sql.Open(%q) error = %v", path, err)
 	}
 	return db
+}
+
+func closeSQLiteDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 }
 
 func mustExecSQLite(t *testing.T, db *sql.DB, query string) {

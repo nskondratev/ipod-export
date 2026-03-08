@@ -107,7 +107,7 @@ func parseDatabase(ctx context.Context, data []byte, mountPath string) ([]model.
 		return nil, 0, err
 	}
 
-	end := min(len(data), root.Offset+root.TotalSize)
+	end := minInt(len(data), root.Offset+root.TotalSize)
 	offset := root.Offset + root.HeaderSize
 	var tracks []model.Track
 
@@ -141,7 +141,7 @@ func parseDatabase(ctx context.Context, data []byte, mountPath string) ([]model.
 
 func parseTrackDataSet(ctx context.Context, data []byte, ds dataSetHeader, mountPath string) ([]model.Track, error) {
 	childOffset := ds.Offset + ds.HeaderSize
-	childEnd := min(len(data), ds.Offset+ds.TotalSize)
+	childEnd := minInt(len(data), ds.Offset+ds.TotalSize)
 	list, err := readTrackListHeader(data, childOffset, childEnd)
 	if err != nil {
 		return nil, err
@@ -429,11 +429,11 @@ func scoreDecodedString(value string) int {
 		case unicode.IsLetter(r), unicode.IsDigit(r):
 			score += 3
 		case unicode.IsSpace(r):
-			score += 1
+			score++
 		case unicode.IsPunct(r), unicode.IsSymbol(r):
-			score += 1
+			score++
 		default:
-			score -= 1
+			score--
 		}
 	}
 	return score
@@ -485,7 +485,7 @@ func NewTrack(id, mountPath, rawPath string) model.Track {
 	}
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

@@ -11,6 +11,9 @@ dist/
 coverage.out
 *.coverprofile
 
+# Local tool caches
+.golangci-lint-cache/
+
 # Local environment files
 .env
 .env.*

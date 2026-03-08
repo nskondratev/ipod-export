@@ -277,7 +277,9 @@ func copyFile(ctx context.Context, src, dst string, overwrite bool, onProgress f
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		_ = in.Close()
+	}()
 
 	dir := filepath.Dir(dst)
 	base := filepath.Base(dst)

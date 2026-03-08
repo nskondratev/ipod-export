@@ -171,3 +171,11 @@ Run tests:
 ```bash
 go test ./...
 ```
+
+Run linters with the repo-pinned `golangci-lint` tool dependency:
+
+```bash
+make lint
+```
+
+This does not rely on a globally installed `golangci-lint`. The version is pinned in [`tools/go.mod`](/Users/nskondratev/Projects/ipod-export/tools/go.mod) and is executed via `go tool`.

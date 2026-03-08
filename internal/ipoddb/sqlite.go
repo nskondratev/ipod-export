@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	// Register the pure-Go SQLite driver used by newer iPods.
 	_ "modernc.org/sqlite"
 
 	"github.com/nskondratev/ipod-export/internal/model"
@@ -37,7 +38,9 @@ func (r *SQLiteLibraryReader) ReadTracks(ctx context.Context, mountPath string) 
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite library %q: %w", paths.library, err)
 	}
-	defer libraryDB.Close()
+	defer func() {
+		_ = libraryDB.Close()
+	}()
 
 	rows, err := libraryDB.QueryContext(
 		ctx,
@@ -48,7 +51,9 @@ func (r *SQLiteLibraryReader) ReadTracks(ctx context.Context, mountPath string) 
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite library tracks: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	tracks := make([]model.Track, 0, len(locations))
 	for rows.Next() {
@@ -112,7 +117,9 @@ func loadSQLiteLocations(ctx context.Context, dbPath, mountPath string) (map[int
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite locations %q: %w", dbPath, err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	rows, err := db.QueryContext(
 		ctx,
@@ -123,7 +130,9 @@ func loadSQLiteLocations(ctx context.Context, dbPath, mountPath string) (map[int
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite locations: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	locations := make(map[int64]string)
 	for rows.Next() {
