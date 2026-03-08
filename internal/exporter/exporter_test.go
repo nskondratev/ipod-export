@@ -64,7 +64,7 @@ func TestCopyFileRemovesPartialTempFileOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := copyFile(ctx, src, dst, false)
+	err := copyFile(ctx, src, dst, false, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("copyFile() error = %v, want %v", err, context.Canceled)
 	}
@@ -78,6 +78,47 @@ func TestCopyFileRemovesPartialTempFileOnCancel(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files left behind: %v", matches)
+	}
+}
+
+func TestPlanCopyJobsCollectsTotalSizes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.mp3")
+	if err := os.WriteFile(src, []byte("audio-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	exp := Exporter{
+		Logger: log.New(io.Discard, "", 0),
+		Config: Config{
+			OutputDir: dir,
+			Detector:  mustDetector(t, dedupe.ModeNone),
+			Resolver:  DefaultConflictResolver{},
+			AllowedExts: map[string]struct{}{
+				".mp3": {},
+			},
+		},
+	}
+
+	jobs, report, err := exp.planCopyJobs(context.Background(), []model.Track{{
+		TrackID:  "1",
+		Artist:   "Artist",
+		Title:    "Track",
+		FilePath: src,
+	}})
+	if err != nil {
+		t.Fatalf("planCopyJobs() error = %v", err)
+	}
+	if report != (Report{}) {
+		t.Fatalf("report = %+v, want zero report", report)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	}
+	if jobs[0].Size != int64(len("audio-bytes")) {
+		t.Fatalf("job size = %d, want %d", jobs[0].Size, len("audio-bytes"))
 	}
 }
 

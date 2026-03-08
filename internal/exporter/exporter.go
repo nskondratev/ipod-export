@@ -16,13 +16,15 @@ import (
 )
 
 type Config struct {
-	OutputDir   string
-	DryRun      bool
-	Verbose     bool
-	Overwrite   bool
-	Detector    dedupe.Detector
-	Resolver    naming.ConflictResolver
-	AllowedExts map[string]struct{}
+	OutputDir      string
+	DryRun         bool
+	Verbose        bool
+	Overwrite      bool
+	ShowProgress   bool
+	ProgressOutput io.Writer
+	Detector       dedupe.Detector
+	Resolver       naming.ConflictResolver
+	AllowedExts    map[string]struct{}
 }
 
 type Exporter struct {
@@ -43,17 +45,85 @@ func (DefaultConflictResolver) Resolve(track model.Track, ext string, exists fun
 }
 
 func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, error) {
-	report := Report{}
-
 	if err := os.MkdirAll(e.Config.OutputDir, 0o755); err != nil {
-		return report, fmt.Errorf("create output dir: %w", err)
+		return Report{}, fmt.Errorf("create output dir: %w", err)
 	}
 
+	jobs, report, err := e.planCopyJobs(ctx, tracks)
+	if err != nil {
+		return report, err
+	}
+
+	if e.Config.DryRun {
+		for _, job := range jobs {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
+			e.Logger.Printf("[dry-run] copy %q -> %q", job.Track.FilePath, job.Destination)
+			report.Exported++
+		}
+		return report, nil
+	}
+
+	var progress *ProgressBar
+	if e.Config.ShowProgress && len(jobs) > 0 {
+		progress = NewProgressBar(e.progressOutput(), len(jobs), totalBytes(jobs))
+		defer progress.Finish()
+	}
+
+	for _, job := range jobs {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+
+		if progress != nil {
+			progress.StartFile(filepath.Base(job.Destination))
+		}
+
+		if err := copyFile(ctx, job.Track.FilePath, job.Destination, e.Config.Overwrite, func(written int64) {
+			if progress != nil {
+				progress.AddBytes(written)
+			}
+		}); err != nil {
+			return report, fmt.Errorf("copy %q to %q: %w", job.Track.FilePath, job.Destination, err)
+		}
+		report.Exported++
+		if progress != nil {
+			progress.FinishFile()
+		}
+		e.logf("copied %q -> %q", job.Track.FilePath, job.Destination)
+	}
+
+	return report, nil
+}
+
+func (e Exporter) logf(format string, args ...any) {
+	if e.Config.Verbose && e.Logger != nil {
+		e.Logger.Printf(format, args...)
+	}
+}
+
+type copyJob struct {
+	Track       model.Track
+	Destination string
+	Size        int64
+}
+
+func (e Exporter) progressOutput() io.Writer {
+	if e.Config.ProgressOutput != nil {
+		return e.Config.ProgressOutput
+	}
+	return os.Stderr
+}
+
+func (e Exporter) planCopyJobs(ctx context.Context, tracks []model.Track) ([]copyJob, Report, error) {
+	report := Report{}
 	reserved := make(map[string]struct{})
+	jobs := make([]copyJob, 0, len(tracks))
 
 	for _, track := range tracks {
 		if err := ctx.Err(); err != nil {
-			return report, err
+			return jobs, report, err
 		}
 
 		ext := strings.ToLower(filepath.Ext(track.FilePath))
@@ -64,7 +134,7 @@ func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, err
 
 		seen, err := e.Config.Detector.Seen(track)
 		if err != nil {
-			return report, err
+			return jobs, report, err
 		}
 		if seen {
 			report.SkippedDuplicates++
@@ -93,29 +163,30 @@ func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, err
 			}
 		}
 
-		if e.Config.DryRun {
-			e.Logger.Printf("[dry-run] copy %q -> %q", track.FilePath, dst)
-			report.Exported++
-			continue
+		info, err := os.Stat(track.FilePath)
+		if err != nil {
+			return jobs, report, fmt.Errorf("stat source file %q: %w", track.FilePath, err)
 		}
 
-		if err := copyFile(ctx, track.FilePath, dst, e.Config.Overwrite); err != nil {
-			return report, fmt.Errorf("copy %q to %q: %w", track.FilePath, dst, err)
-		}
-		report.Exported++
-		e.logf("copied %q -> %q", track.FilePath, dst)
+		jobs = append(jobs, copyJob{
+			Track:       track,
+			Destination: dst,
+			Size:        info.Size(),
+		})
 	}
 
-	return report, nil
+	return jobs, report, nil
 }
 
-func (e Exporter) logf(format string, args ...any) {
-	if e.Config.Verbose && e.Logger != nil {
-		e.Logger.Printf(format, args...)
+func totalBytes(jobs []copyJob) int64 {
+	var total int64
+	for _, job := range jobs {
+		total += job.Size
 	}
+	return total
 }
 
-func copyFile(ctx context.Context, src, dst string, overwrite bool) (err error) {
+func copyFile(ctx context.Context, src, dst string, overwrite bool, onProgress func(int64)) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -138,7 +209,7 @@ func copyFile(ctx context.Context, src, dst string, overwrite bool) (err error) 
 		}
 	}()
 
-	if err := copyWithContext(ctx, out, in); err != nil {
+	if err := copyWithContext(ctx, out, in, onProgress); err != nil {
 		return err
 	}
 	if err := out.Sync(); err != nil {
@@ -164,7 +235,7 @@ func copyFile(ctx context.Context, src, dst string, overwrite bool) (err error) 
 	return nil
 }
 
-func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, onProgress func(int64)) error {
 	buf := make([]byte, 32*1024)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -175,6 +246,9 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 		if n > 0 {
 			if _, err := dst.Write(buf[:n]); err != nil {
 				return err
+			}
+			if onProgress != nil {
+				onProgress(int64(n))
 			}
 		}
 

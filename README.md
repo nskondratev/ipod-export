@@ -12,6 +12,7 @@ Implemented today:
 - Flat export layout with filename sanitization and conflict resolution
 - Duplicate detection by source identity or SHA-256 hashing
 - Graceful shutdown on `Ctrl+C` / `SIGTERM` with context cancellation and partial-file cleanup
+- Progress bar during real copy with throughput, elapsed time, and ETA
 - Initial binary `iTunesDB` parsing for:
   - `mhbd`
   - `mhsd` track datasets
@@ -77,6 +78,7 @@ Using the compiled binary:
 - `--out`: destination directory for exported audio files
 - `--dry-run`: print planned copies without writing files
 - `--verbose`: enable detailed logging
+- `--no-progress`: disable the interactive progress bar
 - `--overwrite`: allow overwriting existing destination files
 - `--duplicates`: duplicate handling mode: `none`, `source`, or `hash`
 - `--hash-duplicates`: shorthand for hash-based duplicate detection
@@ -129,7 +131,9 @@ go run ./cmd/ipod-export \
 
 3. If the planned output looks correct, run the same command without `--dry-run`.
 
-If you stop the tool with `Ctrl+C`, it will finish the current cancellation path cleanly, stop scheduling new work, and remove any partially copied temporary file before exiting.
+If your terminal does not handle carriage-return redraw cleanly, run the real export with `--no-progress`.
+
+If you stop the tool with `Ctrl+C`, the first signal starts graceful shutdown, stops scheduling new work, and removes any partially copied temporary file before exiting. A second `Ctrl+C` forces immediate exit with code `130`.
 
 ## Development
 

@@ -32,8 +32,10 @@ func run() error {
 	cfg := parseFlags()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopSignals := installSignalHandler(logger, cancel)
+	defer stopSignals()
 
 	if cfg.IPodPath == "" {
 		return errors.New("missing required --ipod path")
@@ -80,13 +82,15 @@ func run() error {
 	exp := exporter.Exporter{
 		Logger: logger,
 		Config: exporter.Config{
-			OutputDir:   cfg.OutputPath,
-			DryRun:      cfg.DryRun,
-			Verbose:     cfg.Verbose,
-			Overwrite:   cfg.Overwrite,
-			Detector:    detector,
-			Resolver:    exporter.DefaultConflictResolver{},
-			AllowedExts: ipoddb.SupportedAudioExtensions(),
+			OutputDir:      cfg.OutputPath,
+			DryRun:         cfg.DryRun,
+			Verbose:        cfg.Verbose,
+			Overwrite:      cfg.Overwrite,
+			ShowProgress:   !cfg.DryRun && !cfg.Verbose && !cfg.NoProgress,
+			ProgressOutput: os.Stderr,
+			Detector:       detector,
+			Resolver:       exporter.DefaultConflictResolver{},
+			AllowedExts:    ipoddb.SupportedAudioExtensions(),
 		},
 	}
 
@@ -114,11 +118,46 @@ func run() error {
 	return nil
 }
 
+func installSignalHandler(logger *log.Logger, cancel context.CancelFunc) func() {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		sig, ok := <-signals
+		if !ok {
+			return
+		}
+
+		fmt.Fprintln(os.Stderr)
+		logger.Printf("received %s, shutting down gracefully; press Ctrl+C again to force exit", sig)
+		cancel()
+
+		sig, ok = <-signals
+		if !ok {
+			return
+		}
+
+		fmt.Fprintln(os.Stderr)
+		logger.Printf("received %s again, forcing exit", sig)
+		os.Exit(130)
+	}()
+
+	return func() {
+		signal.Stop(signals)
+		close(signals)
+		<-done
+	}
+}
+
 type cliConfig struct {
 	IPodPath       string
 	OutputPath     string
 	DryRun         bool
 	Verbose        bool
+	NoProgress     bool
 	Overwrite      bool
 	HashDuplicates bool
 	FallbackTags   bool
@@ -132,6 +171,7 @@ func parseFlags() cliConfig {
 	flag.StringVar(&cfg.OutputPath, "out", "", "destination directory")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "print planned actions without copying files")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "enable verbose logging")
+	flag.BoolVar(&cfg.NoProgress, "no-progress", false, "disable the interactive progress bar")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", false, "overwrite destination files when names resolve to an existing file")
 	flag.BoolVar(&cfg.HashDuplicates, "hash-duplicates", false, "use content hashing to detect duplicate files")
 	flag.BoolVar(&cfg.FallbackTags, "fallback-tags", false, "fall back to scanning audio files when iTunesDB parsing fails (metadata fallback is scaffolded, not full tag parsing)")
