@@ -1,0 +1,16 @@
+.DS_Store
+
+# Go build outputs
+bin/
+dist/
+*.exe
+*.out
+*.test
+
+# Coverage artifacts
+coverage.out
+*.coverprofile
+
+# Local environment files
+.env
+.env.*
