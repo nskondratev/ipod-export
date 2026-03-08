@@ -54,12 +54,11 @@ func BuildSecondary(track model.Track, ext string) string {
 	}
 
 	return sanitizeFilename(fmt.Sprintf(
-		"%s - %s (%s)%s",
+		"%s - %s (%s)",
 		sanitizePart(defaultArtist(track.Artist)),
 		sanitizePart(defaultTitle(track.Title)),
 		sanitizePart(detail),
-		ext,
-	), "")
+	), ext)
 }
 
 func detailSuffix(track model.Track) string {
@@ -103,9 +102,6 @@ func sanitizePart(value string) string {
 
 func sanitizeFilename(base, ext string) string {
 	base = strings.TrimSpace(base)
-	if ext != "" {
-		base = strings.TrimSuffix(base, filepath.Ext(base))
-	}
 	base = strings.TrimRight(base, ". ")
 	if base == "" {
 		base = "Unknown"

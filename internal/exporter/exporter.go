@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -122,7 +123,7 @@ func (e Exporter) planCopyJobs(ctx context.Context, tracks []model.Track) ([]cop
 		}
 
 		name := e.Config.Resolver.Resolve(track, ext, func(candidate string) bool {
-			if _, ok := reserved[candidate]; ok {
+			if _, ok := reserved[normalizeCandidateKey(candidate)]; ok {
 				return true
 			}
 			if e.Config.Overwrite {
@@ -131,7 +132,7 @@ func (e Exporter) planCopyJobs(ctx context.Context, tracks []model.Track) ([]cop
 			_, err := os.Stat(filepath.Join(e.Config.OutputDir, candidate))
 			return err == nil
 		})
-		reserved[name] = struct{}{}
+		reserved[normalizeCandidateKey(name)] = struct{}{}
 
 		dst := filepath.Join(e.Config.OutputDir, name)
 		if !e.Config.Overwrite {
@@ -260,6 +261,15 @@ func (e Exporter) executeCopyJobs(ctx context.Context, jobs []copyJob, report Re
 type copyResult struct {
 	job copyJob
 	err error
+}
+
+func normalizeCandidateKey(value string) string {
+	switch runtime.GOOS {
+	case "windows", "darwin":
+		return strings.ToLower(value)
+	default:
+		return value
+	}
 }
 
 func copyFile(ctx context.Context, src, dst string, overwrite bool, onProgress func(int64)) (err error) {

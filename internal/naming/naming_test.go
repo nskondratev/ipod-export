@@ -84,3 +84,17 @@ func TestSanitizeFilenameAvoidsReservedWindowsNames(t *testing.T) {
 		t.Fatalf("sanitizeFilename() = %q, want %q", got, want)
 	}
 }
+
+func TestBuildPrimaryPreservesDotsInsideMetadata(t *testing.T) {
+	t.Parallel()
+
+	got := BuildPrimary(model.Track{
+		Artist: "Kanye West Feat. Young Jeezy",
+		Title:  "Amazing",
+	}, ".mp3")
+
+	want := "Kanye West Feat. Young Jeezy - Amazing.mp3"
+	if got != want {
+		t.Fatalf("BuildPrimary() = %q, want %q", got, want)
+	}
+}
