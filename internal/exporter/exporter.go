@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/nskondratev/ipod-export/internal/dedupe"
 	"github.com/nskondratev/ipod-export/internal/model"
@@ -20,6 +21,7 @@ type Config struct {
 	DryRun         bool
 	Verbose        bool
 	Overwrite      bool
+	Jobs           int
 	ShowProgress   bool
 	ProgressOutput io.Writer
 	Detector       dedupe.Detector
@@ -71,30 +73,7 @@ func (e Exporter) Export(ctx context.Context, tracks []model.Track) (Report, err
 		defer progress.Finish()
 	}
 
-	for _, job := range jobs {
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-
-		if progress != nil {
-			progress.StartFile(filepath.Base(job.Destination))
-		}
-
-		if err := copyFile(ctx, job.Track.FilePath, job.Destination, e.Config.Overwrite, func(written int64) {
-			if progress != nil {
-				progress.AddBytes(written)
-			}
-		}); err != nil {
-			return report, fmt.Errorf("copy %q to %q: %w", job.Track.FilePath, job.Destination, err)
-		}
-		report.Exported++
-		if progress != nil {
-			progress.FinishFile()
-		}
-		e.logf("copied %q -> %q", job.Track.FilePath, job.Destination)
-	}
-
-	return report, nil
+	return e.executeCopyJobs(ctx, jobs, report, progress)
 }
 
 func (e Exporter) logf(format string, args ...any) {
@@ -184,6 +163,103 @@ func totalBytes(jobs []copyJob) int64 {
 		total += job.Size
 	}
 	return total
+}
+
+func (e Exporter) executeCopyJobs(ctx context.Context, jobs []copyJob, report Report, progress *ProgressBar) (Report, error) {
+	workerCount := e.Config.Jobs
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > len(jobs) && len(jobs) > 0 {
+		workerCount = len(jobs)
+	}
+	if workerCount == 0 {
+		return report, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobCh := make(chan copyJob)
+	resultCh := make(chan copyResult, workerCount)
+
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobCh {
+				if err := ctx.Err(); err != nil {
+					resultCh <- copyResult{err: err}
+					return
+				}
+
+				if progress != nil {
+					progress.StartFile(filepath.Base(job.Destination))
+				}
+
+				err := copyFile(ctx, job.Track.FilePath, job.Destination, e.Config.Overwrite, func(written int64) {
+					if progress != nil {
+						progress.AddBytes(written)
+					}
+				})
+				if err != nil {
+					if progress != nil {
+						progress.AbortFile()
+					}
+					resultCh <- copyResult{
+						job: job,
+						err: fmt.Errorf("copy %q to %q: %w", job.Track.FilePath, job.Destination, err),
+					}
+					cancel()
+					return
+				}
+
+				if progress != nil {
+					progress.FinishFile()
+				}
+				e.logf("copied %q -> %q", job.Track.FilePath, job.Destination)
+				resultCh <- copyResult{job: job}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobCh)
+		for _, job := range jobs {
+			select {
+			case <-ctx.Done():
+				return
+			case jobCh <- job:
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	for result := range resultCh {
+		if result.err != nil {
+			if errors.Is(result.err, context.Canceled) && ctx.Err() != nil {
+				return report, ctx.Err()
+			}
+			return report, result.err
+		}
+		report.Exported++
+	}
+
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
+
+	return report, nil
+}
+
+type copyResult struct {
+	job copyJob
+	err error
 }
 
 func copyFile(ctx context.Context, src, dst string, overwrite bool, onProgress func(int64)) (err error) {

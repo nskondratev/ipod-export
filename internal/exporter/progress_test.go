@@ -24,6 +24,7 @@ func TestProgressBarRendersMetrics(t *testing.T) {
 		"512B/1.0KiB",
 		"elapsed 00:02",
 		"ETA 00:02",
+		"active=0",
 		"track.mp3",
 	} {
 		if !strings.Contains(got, want) {

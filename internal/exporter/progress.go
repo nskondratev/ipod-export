@@ -17,6 +17,7 @@ type ProgressBar struct {
 	completedFiles int
 	copiedBytes    int64
 	currentFile    string
+	activeFiles    int
 	rendered       bool
 	mu             sync.Mutex
 }
@@ -35,6 +36,7 @@ func (p *ProgressBar) StartFile(name string) {
 	defer p.mu.Unlock()
 
 	p.currentFile = name
+	p.activeFiles++
 	p.renderLocked(false)
 }
 
@@ -51,7 +53,22 @@ func (p *ProgressBar) FinishFile() {
 	defer p.mu.Unlock()
 
 	p.completedFiles++
+	p.abortFileLocked()
 	p.renderLocked(false)
+}
+
+func (p *ProgressBar) AbortFile() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.abortFileLocked()
+	p.renderLocked(false)
+}
+
+func (p *ProgressBar) abortFileLocked() {
+	if p.activeFiles > 0 {
+		p.activeFiles--
+	}
 }
 
 func (p *ProgressBar) Finish() {
@@ -105,7 +122,7 @@ func (p *ProgressBar) renderLocked(force bool) {
 		formatBytes(int64(speed)),
 		formatDuration(elapsed),
 		eta,
-		truncateCurrentFile(p.currentFile, 28),
+		fmt.Sprintf("active=%d %s", p.activeFiles, truncateCurrentFile(p.currentFile, 20)),
 	)
 
 	fmt.Fprint(p.output, line)

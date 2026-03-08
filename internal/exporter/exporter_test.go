@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nskondratev/ipod-export/internal/dedupe"
@@ -119,6 +120,57 @@ func TestPlanCopyJobsCollectsTotalSizes(t *testing.T) {
 	}
 	if jobs[0].Size != int64(len("audio-bytes")) {
 		t.Fatalf("job size = %d, want %d", jobs[0].Size, len("audio-bytes"))
+	}
+}
+
+func TestExportCopiesFilesInParallel(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src1 := filepath.Join(dir, "source1.mp3")
+	src2 := filepath.Join(dir, "source2.mp3")
+	if err := os.WriteFile(src1, []byte("audio-one"), 0o644); err != nil {
+		t.Fatalf("WriteFile(src1) error = %v", err)
+	}
+	if err := os.WriteFile(src2, []byte("audio-two"), 0o644); err != nil {
+		t.Fatalf("WriteFile(src2) error = %v", err)
+	}
+
+	exp := Exporter{
+		Logger: log.New(io.Discard, "", 0),
+		Config: Config{
+			OutputDir: dir,
+			Jobs:      2,
+			Detector:  mustDetector(t, dedupe.ModeNone),
+			Resolver:  DefaultConflictResolver{},
+			AllowedExts: map[string]struct{}{
+				".mp3": {},
+			},
+		},
+	}
+
+	report, err := exp.Export(context.Background(), []model.Track{
+		{TrackID: "1", Artist: "Artist One", Title: "Track One", FilePath: src1},
+		{TrackID: "2", Artist: "Artist Two", Title: "Track Two", FilePath: src2},
+	})
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	if report.Exported != 2 {
+		t.Fatalf("Exported = %d, want 2", report.Exported)
+	}
+
+	for _, want := range []string{
+		filepath.Join(dir, "Artist One - Track One.mp3"),
+		filepath.Join(dir, "Artist Two - Track Two.mp3"),
+	} {
+		data, err := os.ReadFile(want)
+		if err != nil {
+			t.Fatalf("ReadFile(%q) error = %v", want, err)
+		}
+		if !strings.HasPrefix(string(data), "audio-") {
+			t.Fatalf("unexpected content in %q: %q", want, string(data))
+		}
 	}
 }
 

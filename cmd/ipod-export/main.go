@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/nskondratev/ipod-export/internal/dedupe"
@@ -86,6 +87,7 @@ func run() error {
 			DryRun:         cfg.DryRun,
 			Verbose:        cfg.Verbose,
 			Overwrite:      cfg.Overwrite,
+			Jobs:           cfg.Jobs,
 			ShowProgress:   !cfg.DryRun && !cfg.Verbose && !cfg.NoProgress,
 			ProgressOutput: os.Stderr,
 			Detector:       detector,
@@ -158,6 +160,7 @@ type cliConfig struct {
 	DryRun         bool
 	Verbose        bool
 	NoProgress     bool
+	Jobs           int
 	Overwrite      bool
 	HashDuplicates bool
 	FallbackTags   bool
@@ -172,11 +175,19 @@ func parseFlags() cliConfig {
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "print planned actions without copying files")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "enable verbose logging")
 	flag.BoolVar(&cfg.NoProgress, "no-progress", false, "disable the interactive progress bar")
+	flag.IntVar(&cfg.Jobs, "jobs", 1, "number of files to copy in parallel")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", false, "overwrite destination files when names resolve to an existing file")
 	flag.BoolVar(&cfg.HashDuplicates, "hash-duplicates", false, "use content hashing to detect duplicate files")
 	flag.BoolVar(&cfg.FallbackTags, "fallback-tags", false, "fall back to scanning audio files when iTunesDB parsing fails (metadata fallback is scaffolded, not full tag parsing)")
 	flag.StringVar(&cfg.DuplicateMode, "duplicates", dedupe.ModeSource, "duplicate handling mode: none, source, hash")
 	flag.Parse()
+
+	if cfg.Jobs < 1 {
+		cfg.Jobs = 1
+	}
+	if cfg.Jobs > runtime.NumCPU()*4 {
+		cfg.Jobs = runtime.NumCPU() * 4
+	}
 
 	return cfg
 }
