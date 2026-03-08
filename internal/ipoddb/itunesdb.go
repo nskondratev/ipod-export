@@ -30,26 +30,39 @@ const (
 )
 
 func (r *ITunesDBReader) ReadTracks(ctx context.Context, mountPath string) ([]model.Track, error) {
+	var binaryErr error
+
 	dbPath, err := locateDatabase(mountPath)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		data, err := os.ReadFile(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("read database %q: %w", dbPath, err)
+		}
+
+		tracks, version, err := parseDatabase(ctx, data, mountPath)
+		if err == nil {
+			if r.logger != nil {
+				r.logger.Printf("parsed iTunesDB %q version=%d tracks=%d", dbPath, version, len(tracks))
+			}
+			return tracks, nil
+		}
+
+		if r.logger != nil {
+			r.logger.Printf("binary iPod database %q was found but could not be parsed, trying sqlite fallback: %v", dbPath, err)
+		}
+		binaryErr = err
 	}
 
-	data, err := os.ReadFile(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("read database %q: %w", dbPath, err)
+	sqliteReader := NewSQLiteLibraryReader(r.logger)
+	tracks, err := sqliteReader.ReadTracks(ctx, mountPath)
+	if err == nil {
+		return tracks, nil
 	}
 
-	tracks, version, err := parseDatabase(ctx, data, mountPath)
-	if err != nil {
-		return nil, err
+	if binaryErr != nil {
+		return nil, fmt.Errorf("read iPod database: binary reader failed: %v; sqlite reader failed: %w", binaryErr, err)
 	}
-
-	if r.logger != nil {
-		r.logger.Printf("parsed iTunesDB %q version=%d tracks=%d", dbPath, version, len(tracks))
-	}
-
-	return tracks, nil
+	return nil, err
 }
 
 type sizedChunk struct {
@@ -437,6 +450,7 @@ func readUint32(data []byte, offset int) uint32 {
 func locateDatabase(mountPath string) (string, error) {
 	candidates := []string{
 		filepath.Join(mountPath, "iPod_Control", "iTunes", "iTunesDB"),
+		filepath.Join(mountPath, "iPod_Control", "iTunes", "iTunesCDB"),
 		filepath.Join(mountPath, "iTunes_Control", "iTunes", "iTunesDB"),
 	}
 

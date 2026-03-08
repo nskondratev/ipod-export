@@ -2,7 +2,7 @@
 
 `ipod-export` is a Go CLI for exporting music from a mounted Apple iPod Shuffle or iPod Nano.
 
-The tool reads the iPod music database from `iPod_Control/iTunes/iTunesDB`, resolves randomized on-device file paths, and copies tracks into a flat output directory with human-readable filenames.
+The tool reads the iPod music database, resolves randomized on-device file paths, and copies tracks into a flat output directory with human-readable filenames.
 
 ## Current status
 
@@ -19,6 +19,9 @@ Implemented today:
   - `mhlt` track lists
   - `mhit` track records
   - `mhod` string objects for title, location, album, and artist
+- SQLite library parsing for newer devices that store metadata in:
+  - `iTunes Library.itlp/Library.itdb`
+  - `iTunes Library.itlp/Locations.itdb`
 
 Known limitations:
 
@@ -96,7 +99,7 @@ Using the compiled binary:
 - `--overwrite`: allow overwriting existing destination files
 - `--duplicates`: duplicate handling mode: `none`, `source`, or `hash`
 - `--hash-duplicates`: shorthand for hash-based duplicate detection
-- `--fallback-tags`: if `iTunesDB` parsing fails, scan `iPod_Control/Music` directly
+- `--fallback-tags`: if database parsing fails, scan `iPod_Control/Music` directly
 
 ## Output naming
 
@@ -123,13 +126,15 @@ Fallbacks:
 
 ## How it resolves iPod paths
 
-The iPod database typically stores file locations in the classic colon-separated format:
+Older iPods typically store file locations in the classic colon-separated format:
 
 ```text
 :iPod_Control:Music:F00:ABCD.mp3
 ```
 
 `ipod-export` converts that into a real filesystem path under the mounted iPod root before copying.
+
+Newer devices such as iPod Nano 7 can use SQLite-backed `Library.itdb` and `Locations.itdb`; the tool reads those automatically when present.
 
 ## Example workflow
 
